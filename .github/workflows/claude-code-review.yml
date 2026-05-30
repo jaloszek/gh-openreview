@@ -1,0 +1,126 @@
+name: "Claude Code Review"
+
+# Manual, on-demand review of a specific PR. Unlike the opencode self-test
+# (which runs automatically on every PR), this is dispatched by hand and takes
+# the PR number as input, so there is no pull_request event to read it from.
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: string
+
+concurrency:
+  group: claude-code-review-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          fetch-depth: 0
+
+      - name: PR Review with Progress Tracking
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # track_progress only supports PR/issue events, not workflow_dispatch,
+          # so it must stay false here; the prompt tells Claude to post the review.
+          track_progress: false
+          use_sticky_comment: false
+          include_fix_links: false
+          show_full_output: ${{ runner.debug == '1' }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ inputs.pr_number }}
+
+            Perform a comprehensive code review with the following focus areas:
+
+            1. Code Quality
+               - Clean code principles and best practices
+               - Proper error handling and edge cases
+               - Code readability and maintainability
+
+            2. Security
+               - Check for potential security vulnerabilities
+               - Validate input sanitization
+               - Review authentication/authorization logic
+
+            3. Performance
+               - Identify potential performance bottlenecks
+               - Review database queries for efficiency
+               - Check for memory leaks or resource issues
+
+            4. Testing
+               - Verify adequate test coverage
+               - Review test quality and edge cases
+               - Check for missing test scenarios
+
+            5. PR Description Quality
+               - Review and propose improved PR description
+               - Description must be human-readable, focused on facts, fast to understand
+
+            6. Project Conventions
+               - Read project conventions if exists (usually in conventions/)
+               - Check if proposed changes met project conventions and code style
+
+            Order ALL findings by severity, most critical first.
+            Severity labels (use exactly these):
+            - 🔴 Critical — bugs, security vulnerabilities, data loss risks, production outage potential
+            - 🟠 High — race conditions, missing error handling, incorrect edge case behavior
+            - 🟡 Medium — needs verification or action, performance issues, unused but wired-up code
+            - 🔵 Low — cosmetic, test-only issues, gracefully handled edge cases
+            - ⚪ Info — intentional trade-offs, acknowledged risks, noting good practice
+            - ✅ None — no action needed, noting good design
+
+            When done, post your review on PR #${{ inputs.pr_number }} as a single
+            PR comment using the available tools. The comment body MUST start with
+            this exact line so older runs can be cleaned up:
+            ## 🔍 Code Review
+
+          claude_args: |
+            --max-turns 60
+            --model opus
+            --allowedTools "pull_request_review_write,add_comment_to_pending_review,mcp__github_comment__update_claude_comment,Bash(gh api *),Bash(gh pr comment *),Bash(gh pr diff *),Bash(gh pr view *),Read,Glob,Grep"
+
+      - name: Cleanup old review comments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ inputs.pr_number }}
+          REPO=${{ github.repository }}
+          KEEP_LAST=1
+
+          # Both Claude review and this step use GITHUB_TOKEN (github-actions[bot]),
+          # so deleting own comments does not generate notifications. Claude starts
+          # each review with the "🔍 Code Review" marker (see prompt). gh's --jq runs
+          # per page but emits a flat, oldest-first id stream across all pages, so
+          # dropping the newest KEEP_LAST and deleting the rest stays correct even
+          # when comments span more than one page.
+          ALL_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | test("🔍 Code Review")) | .id')
+          COMMENT_IDS=$(printf '%s\n' "$ALL_IDS" | sed '/^$/d' | awk -v k="$KEEP_LAST" '{a[NR]=$0} END{for(i=1;i<=NR-k;i++) print a[i]}')
+
+          if [ -z "$COMMENT_IDS" ]; then
+            echo "No old comments to clean up"
+          else
+            for COMMENT_ID in $COMMENT_IDS; do
+              if gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" -X DELETE 2>/dev/null; then
+                echo "Deleted comment $COMMENT_ID"
+              else
+                echo "Warning: Failed to delete comment $COMMENT_ID (may already be deleted)"
+              fi
+            done
+            echo "Cleanup complete"
+          fi
