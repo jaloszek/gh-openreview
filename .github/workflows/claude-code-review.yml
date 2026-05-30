@@ -97,9 +97,11 @@ jobs:
 
           # Both Claude review and this step use GITHUB_TOKEN (github-actions[bot]),
           # so deleting own comments does not generate notifications.
+          # --slurp merges all pages into one array before filtering; without it,
+          # --jq runs per page and breaks once comments span more than one page.
           COMMENT_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            --paginate \
-            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude finished")) | .id] | reverse | .['${KEEP_LAST}':][]')
+            --paginate --slurp \
+            --jq '[.[][] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude finished")) | .id] | reverse | .['${KEEP_LAST}':][]')
 
           if [ -z "$COMMENT_IDS" ]; then
             echo "No old comments to clean up"
