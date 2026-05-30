@@ -148,7 +148,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-      run: ${{ github.action_path }}/lib/gather.sh
+      run: ${{ github.action_path }}/../lib/gather.sh
 
     - name: Review passes (no GitHub token)
       if: steps.ctx.outputs.should_run == 'true'
@@ -157,11 +157,11 @@ runs:
       env:
         OPENCODE_API_KEY: ${{ inputs.opencode-api-key }}
         OPENCODE_CONFIG: ${{ inputs.opencode-config }}
-      run: ${{ github.action_path }}/lib/passes.sh
+      run: ${{ github.action_path }}/../lib/passes.sh
 
     - name: Post review comment
       if: steps.ctx.outputs.should_run == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-      run: ${{ github.action_path }}/lib/post.sh
+      run: ${{ github.action_path }}/../lib/post.sh
