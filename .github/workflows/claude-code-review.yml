@@ -35,7 +35,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          track_progress: true
+          # track_progress only supports PR/issue events, not workflow_dispatch,
+          # so it must stay false here; the prompt tells Claude to post the review.
+          track_progress: false
           use_sticky_comment: false
           include_fix_links: false
           show_full_output: ${{ runner.debug == '1' }}
@@ -82,6 +84,11 @@ jobs:
             - ⚪ Info — intentional trade-offs, acknowledged risks, noting good practice
             - ✅ None — no action needed, noting good design
 
+            When done, post your review on PR #${{ inputs.pr_number }} as a single
+            PR comment using the available tools. The comment body MUST start with
+            this exact line so older runs can be cleaned up:
+            ## 🔍 Code Review
+
           claude_args: |
             --max-turns 60
             --model opus
@@ -96,12 +103,14 @@ jobs:
           KEEP_LAST=1
 
           # Both Claude review and this step use GITHUB_TOKEN (github-actions[bot]),
-          # so deleting own comments does not generate notifications.
-          # --slurp merges all pages into one array before filtering; without it,
-          # --jq runs per page and breaks once comments span more than one page.
-          COMMENT_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            --paginate --slurp \
-            --jq '[.[][] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude finished")) | .id] | reverse | .['${KEEP_LAST}':][]')
+          # so deleting own comments does not generate notifications. Claude starts
+          # each review with the "🔍 Code Review" marker (see prompt). gh's --jq runs
+          # per page but emits a flat, oldest-first id stream across all pages, so
+          # dropping the newest KEEP_LAST and deleting the rest stays correct even
+          # when comments span more than one page.
+          ALL_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | test("🔍 Code Review")) | .id')
+          COMMENT_IDS=$(printf '%s\n' "$ALL_IDS" | sed '/^$/d' | awk -v k="$KEEP_LAST" '{a[NR]=$0} END{for(i=1;i<=NR-k;i++) print a[i]}')
 
           if [ -z "$COMMENT_IDS" ]; then
             echo "No old comments to clean up"
