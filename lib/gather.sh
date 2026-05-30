@@ -3,6 +3,7 @@
 # Writes: pr.diff, pr-meta.json, prev-review.md. Uses inherited gh auth (local)
 # or step-scoped GH_TOKEN (CI). Env: OR_REPO, OR_PR, SCRATCH, MARKER_MATCH.
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${OR_REPO:?OR_REPO required}"

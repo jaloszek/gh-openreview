@@ -4,6 +4,7 @@
 # against everything people and bots have already said. Propose-then-confirm:
 # nothing is posted until you approve (--yes to skip). Posts as YOU.
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 parse_common_flags "$@"

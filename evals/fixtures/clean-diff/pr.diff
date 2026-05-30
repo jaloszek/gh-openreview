@@ -1,0 +1,15 @@
+diff --git a/greet.py b/greet.py
+new file mode 100644
+index 0000000..a1b2c3d
+--- /dev/null
++++ b/greet.py
+@@ -0,0 +1,11 @@
++def greet(name: str) -> str:
++    """Return a friendly greeting for the given name.
++
++    An empty or whitespace-only name falls back to a generic greeting.
++    """
++    cleaned = name.strip()
++    if not cleaned:
++        return "Hello, friend!"
++    return f"Hello, {cleaned}!"

@@ -1,0 +1,7 @@
+# Follow sourced files (e.g. lib/common.sh) when running `shellcheck -x`, so the
+# `# shellcheck source=...` directives in the lib scripts resolve. The CI gate
+# runs at -S warning where unresolved sources (SC1091) are info-only anyway.
+external-sources=true
+# Resolve `# shellcheck source=...` directives relative to each script's own
+# directory, so `. .../common.sh` follows regardless of the invocation CWD.
+source-path=SCRIPTDIR

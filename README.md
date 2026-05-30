@@ -65,6 +65,20 @@ Select a model with `--model <id>` (or `OPENREVIEW_MODEL`); it maps directly to
 `OPENCODE_CONFIG` → project `./opencode.json` → `~/.config/opencode/` →
 the bundled default config (used only when you have none of the above).
 
+### Environment variables
+
+Every flag has an env-var equivalent, plus a few knobs that have no flag:
+
+| Variable | Equivalent to | Purpose |
+|---|---|---|
+| `OPENREVIEW_MODEL` | `--model` | Model id passed to `opencode -m`. |
+| `OPENREVIEW_AUTH_CMD` | `--auth-cmd` | Command run before opencode to mint/refresh provider credentials. |
+| `OPENREVIEW_BOOTSTRAP=1` | `--bootstrap` | Auto-install opencode if it is missing. |
+| `OPENCODE_API_KEY` | — | OpenCode Zen API key (read by opencode). |
+| `OPENCODE_CONFIG` | — | Path to an `opencode.json`; highest-priority config source. |
+| `OPENREVIEW_INBOX_LIMIT` | — | Max PRs `inbox` enriches/prints (default `60`). |
+| `OPENREVIEW_KEEP_SCRATCH=1` | — | Keep the `.openreview-tmp/` working dir instead of deleting it on exit (debugging). |
+
 ## Continuous integration
 
 The review engine is also packaged as a composite Action. Copy

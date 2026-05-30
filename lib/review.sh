@@ -3,6 +3,7 @@
 # Default is read-only (prints the rendered review to stdout); --post comments
 # on the PR as you. Acts via your inherited gh auth + opencode credentials.
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 parse_common_flags "$@"

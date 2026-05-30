@@ -28,5 +28,8 @@ jobs:
           aws-region: us-east-1
       - uses: jaloszek/gh-openreview/action@v1
         with:
-          # no opencode-api-key — auth comes from the AWS credential chain
-          model: amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+          # no opencode-api-key — auth comes from the AWS credential chain.
+          # Use a model your account/region has access to; many newer Anthropic
+          # models on Bedrock require a cross-region inference-profile prefix
+          # (e.g. `us.` / `eu.`) — check the Bedrock console for the exact id.
+          model: amazon-bedrock/anthropic.claude-3-7-sonnet-20250219-v1:0

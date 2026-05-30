@@ -5,6 +5,7 @@
 # highest-leverage candidates to go deeper on with `gh openreview assist`.
 # Read-only — posts nothing. No opencode needed.
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 parse_common_flags "$@"

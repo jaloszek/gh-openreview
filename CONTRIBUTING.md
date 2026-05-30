@@ -25,10 +25,16 @@ Run a subcommand directly from the checkout without installing:
 - Keep it POSIX/Bash-portable (the scripts target Bash 3.2+ so they run on a
   stock macOS as well as Linux). Avoid `mapfile`, associative arrays, and other
   Bash 4-only features.
-- Lint:
+- Lint (also enforced in CI by `.github/workflows/lint.yml`):
   ```bash
-  shellcheck -S warning gh-openreview lib/*.sh
+  shellcheck -S warning gh-openreview lib/*.sh evals/*.sh
   actionlint .github/workflows/*.yml
+  ```
+- If you change a review prompt or the engine, run the evals to catch quality
+  regressions (needs opencode + credentials, no GitHub token), and add a fixture
+  for new behavior — see [`evals/README.md`](evals/README.md):
+  ```bash
+  evals/run.sh
   ```
 - Match the existing style: results go to stdout, all logs/progress go to
   stderr, and anything that writes to a PR is gated behind propose-then-confirm.
