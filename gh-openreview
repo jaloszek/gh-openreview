@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# gh-openreview — a local-first, provider-agnostic PR review toolkit built on the
+# OpenCode harness. Runs as a `gh` extension, so it inherits your `gh` auth and
+# acts as you. See README.md for the full picture.
+#
+# Subcommands:
+#   review   [pr] [--post]            3-pass bot-style audit of a PR
+#   resolve  [pr] [--yes]             reconcile YOUR PR's review threads vs commits
+#   inbox    [--org O] [--include ..] list PRs awaiting your review (direct + team)
+#   assist   <pr> [--summary] [--yes] novel, human-voice review of someone else's PR
+#   doctor                            verify opencode is installed, authed, model resolves
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export OPENREVIEW_ROOT="$ROOT_DIR"
+export OPENREVIEW_LIB="$ROOT_DIR/lib"
+# shellcheck source=lib/common.sh
+. "$OPENREVIEW_LIB/common.sh"
+
+usage() {
+  cat <<'EOF'
+gh openreview — local-first PR review toolkit (OpenCode harness)
+
+Usage:
+  gh openreview review  [<pr>] [--post]              audit a PR (yours or any)
+  gh openreview resolve [<pr>] [--yes]               reconcile your PR's threads
+  gh openreview inbox   [--org <o>] [--include ...]  list PRs awaiting your review
+  gh openreview assist  <pr> [--summary] [--yes]     human-voice review of others' PRs
+  gh openreview doctor                               check the environment
+
+Common options:
+  --model <id>     opencode model (default: $OPENREVIEW_MODEL or the bundled free model)
+  --auth-cmd <c>   run <c> before opencode to mint/refresh provider credentials
+  -h, --help       show this help
+
+<pr> may be a number, a PR URL, or omitted to use the PR of the current branch.
+EOF
+}
+
+main() {
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift || true
+  case "$sub" in
+    review)  exec "$OPENREVIEW_LIB/review.sh" "$@" ;;
+    resolve) exec "$OPENREVIEW_LIB/resolve.sh" "$@" ;;
+    inbox)   exec "$OPENREVIEW_LIB/inbox.sh" "$@" ;;
+    assist)  exec "$OPENREVIEW_LIB/assist.sh" "$@" ;;
+    doctor)  exec "$OPENREVIEW_LIB/doctor.sh" "$@" ;;
+    ""|-h|--help|help) usage ;;
+    *) die "unknown subcommand: $sub (try: gh openreview --help)" ;;
+  esac
+}
+
+main "$@"

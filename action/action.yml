@@ -1,0 +1,158 @@
+name: "OpenCode PR Review"
+description: "Free-first, provider-agnostic PR reviewer on the OpenCode harness (the CI side of the gh-openreview toolkit)."
+author: "jaloszek"
+branding:
+  icon: "git-pull-request"
+  color: "purple"
+
+inputs:
+  opencode-api-key:
+    description: "OpenCode Zen API key. Optional — omit when supplying provider creds another way (e.g. AWS env/OIDC for Bedrock)."
+    required: false
+    default: ""
+  opencode-config:
+    description: "Path to an opencode.json to use. Optional — falls back to the consumer repo's config, then the bundled free-model config."
+    required: false
+    default: ""
+  model:
+    description: "opencode model id."
+    required: false
+    default: "opencode/deepseek-v4-flash-free"
+  github-token:
+    description: "Token used to fetch context and post the comment."
+    required: false
+    default: ${{ github.token }}
+  trigger-phrase:
+    description: "Comment body that triggers an on-demand review (issue_comment events)."
+    required: false
+    default: "@openreview"
+  trigger-label:
+    description: "Label whose addition triggers a review (labeled events)."
+    required: false
+    default: "opencode-review"
+  marker-header:
+    description: "Identity/dedup header (first line of the posted comment). Keep the text 'OpenCode Review' for reliable dedup."
+    required: false
+    default: "## 🤖 OpenCode Review"
+  bot-login:
+    description: "Comment author whose stale reviews are pruned."
+    required: false
+    default: "github-actions[bot]"
+
+runs:
+  using: "composite"
+  steps:
+    # Normalize the three trigger shapes into should_run + pr number. No token
+    # needed (everything comes from the event payload).
+    - name: Resolve context
+      id: ctx
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        ACTION: ${{ github.event.action }}
+        PR_PR: ${{ github.event.pull_request.number }}
+        PR_ISSUE: ${{ github.event.issue.number }}
+        IS_PR_URL: ${{ github.event.issue.pull_request.url }}
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        LABEL_NAME: ${{ github.event.label.name }}
+        TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
+        TRIGGER_LABEL: ${{ inputs.trigger-label }}
+      run: |
+        run=false; pr=""
+        case "$EVENT" in
+          pull_request|pull_request_target)
+            if [ "$ACTION" = "labeled" ]; then
+              [ "$LABEL_NAME" = "$TRIGGER_LABEL" ] && { run=true; pr="$PR_PR"; }
+            else
+              run=true; pr="$PR_PR"
+            fi ;;
+          issue_comment)
+            if [ -n "$IS_PR_URL" ] && printf '%s' "$COMMENT_BODY" | grep -qF "$TRIGGER_PHRASE"; then
+              run=true; pr="$PR_ISSUE"
+            fi ;;
+        esac
+        {
+          echo "should_run=$run"
+          echo "pr=$pr"
+        } >> "$GITHUB_OUTPUT"
+        echo "event=$EVENT action=${ACTION:-} should_run=$run pr=$pr"
+
+    # Check out the PR HEAD. For issue_comment/labeled events GITHUB_SHA points
+    # at the base branch, so refs/pull/<n>/head is required.
+    - name: Checkout PR head
+      if: steps.ctx.outputs.should_run == 'true'
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ github.repository }}
+        ref: refs/pull/${{ steps.ctx.outputs.pr }}/head
+        fetch-depth: 0
+        token: ${{ inputs.github-token }}
+
+    - name: Install opencode
+      if: steps.ctx.outputs.should_run == 'true'
+      shell: bash
+      run: |
+        if command -v opencode >/dev/null 2>&1; then exit 0; fi
+        curl -fsSL https://opencode.ai/install | bash
+        echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+    - name: Install gh CLI
+      if: steps.ctx.outputs.should_run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        if command -v gh >/dev/null 2>&1; then exit 0; fi
+        GH_VER=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+          https://api.github.com/repos/cli/cli/releases/latest \
+          | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+        GH_VER=${GH_VER#v}
+        [ -n "$GH_VER" ] || { echo "::error::could not resolve gh version"; exit 1; }
+        curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" -o /tmp/gh.tar.gz
+        mkdir -p "$HOME/.local/gh"
+        tar -xzf /tmp/gh.tar.gz -C "$HOME/.local/gh" --strip-components=1
+        echo "$HOME/.local/gh/bin" >> "$GITHUB_PATH"
+
+    - name: Prepare engine environment
+      if: steps.ctx.outputs.should_run == 'true'
+      shell: bash
+      env:
+        MODEL: ${{ inputs.model }}
+        MARKER: ${{ inputs.marker-header }}
+        BOT: ${{ inputs.bot-login }}
+      run: |
+        {
+          echo "OR_REPO=${{ github.repository }}"
+          echo "OR_PR=${{ steps.ctx.outputs.pr }}"
+          echo "OR_MODEL=$MODEL"
+          echo "MARKER=$MARKER"
+          echo "BOT_LOGIN=$BOT"
+          echo "OR_DIR=$GITHUB_WORKSPACE"
+          echo "SCRATCH_REL=.openreview-tmp"
+          echo "SCRATCH=$GITHUB_WORKSPACE/.openreview-tmp"
+        } >> "$GITHUB_ENV"
+        mkdir -p "$GITHUB_WORKSPACE/.openreview-tmp"
+
+    # Token-scoped: only gather/post see GH_TOKEN. The model pass below does not.
+    - name: Gather PR context
+      if: steps.ctx.outputs.should_run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/lib/gather.sh
+
+    - name: Review passes (no GitHub token)
+      if: steps.ctx.outputs.should_run == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        OPENCODE_API_KEY: ${{ inputs.opencode-api-key }}
+        OPENCODE_CONFIG: ${{ inputs.opencode-config }}
+      run: ${{ github.action_path }}/lib/passes.sh
+
+    - name: Post review comment
+      if: steps.ctx.outputs.should_run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: ${{ github.action_path }}/lib/post.sh

@@ -1,0 +1,32 @@
+# Drop this into a consumer repo at .github/workflows/opencode-review.yml.
+# It owns the triggers + runner; all logic lives in the reusable action.
+#
+# Required: set the OPENCODE_API_KEY secret (or supply provider creds another
+# way, e.g. AWS via OIDC for Bedrock — see the action README).
+name: OpenCode PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created] # enables the `@openreview` on-demand trigger
+  pull_request_target:
+    types: [labeled] # enables the `opencode-review` label trigger
+
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest # ← the configurable knob (e.g. [self-hosted, linux, x64])
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: jaloszek/gh-openreview/action@v1
+        with:
+          opencode-api-key: ${{ secrets.OPENCODE_API_KEY }}
+          # model: opencode/deepseek-v4-flash-free
+          # trigger-phrase: "@openreview"
+          # trigger-label: "opencode-review"

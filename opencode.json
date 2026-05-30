@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "small_model": "opencode/deepseek-v4-flash-free",
+  "permission": {
+    "bash": "deny",
+    "edit": "allow",
+    "webfetch": "allow",
+    "websearch": "allow"
+  }
+}
