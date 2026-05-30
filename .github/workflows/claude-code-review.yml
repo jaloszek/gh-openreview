@@ -104,13 +104,13 @@ jobs:
 
           # Both Claude review and this step use GITHUB_TOKEN (github-actions[bot]),
           # so deleting own comments does not generate notifications. Claude starts
-          # each review with the "🔍 Code Review" marker (see prompt). gh emits one
-          # JSON array per page; `jq -s` merges them before filtering, so this stays
-          # correct when comments span more than one page (gh's own --slurp is not
-          # available on all runner gh versions).
-          COMMENT_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-            | jq -r --argjson keep "$KEEP_LAST" \
-                '[.[][] | select(.user.login == "github-actions[bot]") | select(.body | test("🔍 Code Review")) | .id] | reverse | .[$keep:][]')
+          # each review with the "🔍 Code Review" marker (see prompt). gh's --jq runs
+          # per page but emits a flat, oldest-first id stream across all pages, so
+          # dropping the newest KEEP_LAST and deleting the rest stays correct even
+          # when comments span more than one page.
+          ALL_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | test("🔍 Code Review")) | .id')
+          COMMENT_IDS=$(printf '%s\n' "$ALL_IDS" | sed '/^$/d' | awk -v k="$KEEP_LAST" '{a[NR]=$0} END{for(i=1;i<=NR-k;i++) print a[i]}')
 
           if [ -z "$COMMENT_IDS" ]; then
             echo "No old comments to clean up"
