@@ -35,7 +35,9 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          track_progress: true
+          # track_progress only supports PR/issue events, not workflow_dispatch,
+          # so it must stay false here; the prompt tells Claude to post the review.
+          track_progress: false
           use_sticky_comment: false
           include_fix_links: false
           show_full_output: ${{ runner.debug == '1' }}
@@ -81,6 +83,9 @@ jobs:
             - 🔵 Low — cosmetic, test-only issues, gracefully handled edge cases
             - ⚪ Info — intentional trade-offs, acknowledged risks, noting good practice
             - ✅ None — no action needed, noting good design
+
+            When done, post your review on PR #${{ inputs.pr_number }} as a single
+            pull request review (or a PR comment) using the available tools.
 
           claude_args: |
             --max-turns 60
