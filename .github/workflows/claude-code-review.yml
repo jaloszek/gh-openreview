@@ -85,7 +85,9 @@ jobs:
             - ✅ None — no action needed, noting good design
 
             When done, post your review on PR #${{ inputs.pr_number }} as a single
-            pull request review (or a PR comment) using the available tools.
+            PR comment using the available tools. The comment body MUST start with
+            this exact line so older runs can be cleaned up:
+            ## 🔍 Code Review
 
           claude_args: |
             --max-turns 60
@@ -101,12 +103,14 @@ jobs:
           KEEP_LAST=1
 
           # Both Claude review and this step use GITHUB_TOKEN (github-actions[bot]),
-          # so deleting own comments does not generate notifications.
-          # --slurp merges all pages into one array before filtering; without it,
-          # --jq runs per page and breaks once comments span more than one page.
-          COMMENT_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            --paginate --slurp \
-            --jq '[.[][] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude finished")) | .id] | reverse | .['${KEEP_LAST}':][]')
+          # so deleting own comments does not generate notifications. Claude starts
+          # each review with the "🔍 Code Review" marker (see prompt). gh emits one
+          # JSON array per page; `jq -s` merges them before filtering, so this stays
+          # correct when comments span more than one page (gh's own --slurp is not
+          # available on all runner gh versions).
+          COMMENT_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            | jq -r --argjson keep "$KEEP_LAST" \
+                '[.[][] | select(.user.login == "github-actions[bot]") | select(.body | test("🔍 Code Review")) | .id] | reverse | .[$keep:][]')
 
           if [ -z "$COMMENT_IDS" ]; then
             echo "No old comments to clean up"
