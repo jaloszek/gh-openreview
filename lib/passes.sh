@@ -4,6 +4,7 @@
 # gather.sh — it NEVER needs a GitHub token. Writes $SCRATCH/opencode-review.md.
 # Env: OR_DIR, SCRATCH, SCRATCH_REL, OR_MODEL, MARKER.
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${OR_DIR:?}"; : "${SCRATCH:?}"; : "${SCRATCH_REL:?}"

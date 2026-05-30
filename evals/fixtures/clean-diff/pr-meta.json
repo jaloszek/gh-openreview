@@ -1,0 +1,7 @@
+{
+  "title": "Add greet() helper",
+  "body": "Small, self-contained greeting helper with an empty-name fallback.",
+  "files": [
+    { "path": "greet.py", "additions": 9, "deletions": 0 }
+  ]
+}

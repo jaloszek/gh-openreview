@@ -6,6 +6,7 @@
 #   SKIP    — unclear / needs a human (we do nothing)
 # Propose-then-confirm: nothing is posted until you approve (--yes to skip).
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 parse_common_flags "$@"

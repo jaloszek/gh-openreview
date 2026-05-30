@@ -4,6 +4,7 @@
 # the marker AND was authored by the posting identity (the local user, or the
 # bot in CI). Env: OR_REPO, OR_PR, SCRATCH, MARKER, MARKER_MATCH, [BOT_LOGIN].
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${OR_REPO:?}"; : "${OR_PR:?}"; : "${SCRATCH:?}"

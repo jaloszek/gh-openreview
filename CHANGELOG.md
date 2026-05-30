@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Added an eval harness (`evals/`) that runs fixture PRs through the review
+  engine and scores the output, guarding review quality against regressions.
+- Added a `lint` CI workflow enforcing `shellcheck -S warning` and `actionlint`
+  on every PR; added `.shellcheckrc` and `# shellcheck source=` directives so
+  sourced files resolve cleanly.
+- Documented the supported environment variables in the README and added a
+  `CLAUDE.md` for Claude Code.
+
 ## v1.0.1
 
 - Open-source polish: rewritten README, added LICENSE (MIT), SECURITY.md, CONTRIBUTING.md.

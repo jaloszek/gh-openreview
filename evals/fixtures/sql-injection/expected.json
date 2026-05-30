@@ -1,0 +1,5 @@
+{
+  "description": "Classic SQL injection: the username is interpolated straight into the query string. The reviewer must flag it as an important issue, cite users.py, and suggest parameterized queries.",
+  "must_match": ["(?i)inject|parameteri|sql", "users\\.py"],
+  "min_important": 1
+}

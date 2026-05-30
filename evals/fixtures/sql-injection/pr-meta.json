@@ -1,0 +1,7 @@
+{
+  "title": "Add find_user lookup",
+  "body": "Adds a helper to fetch a user row by name.",
+  "files": [
+    { "path": "users.py", "additions": 8, "deletions": 0 }
+  ]
+}

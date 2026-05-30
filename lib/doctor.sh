@@ -3,6 +3,7 @@
 # present, an opencode config/credentials resolvable, and the chosen model
 # actually answers. Exits non-zero with an actionable hint when something fails.
 set -euo pipefail
+# shellcheck source=common.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 parse_common_flags "$@"
 resolve_model

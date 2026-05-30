@@ -1,0 +1,27 @@
+# Enforce the quality bar described in CONTRIBUTING.md: every script passes
+# shellcheck at -S warning, and every workflow passes actionlint. Runs without
+# secrets, so it is safe on fork PRs.
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # shellcheck is preinstalled on ubuntu-latest runners.
+      - name: shellcheck
+        run: shellcheck -S warning gh-openreview lib/*.sh evals/*.sh
+
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color

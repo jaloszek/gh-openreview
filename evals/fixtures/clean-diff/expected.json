@@ -1,0 +1,4 @@
+{
+  "description": "A correct, well-documented helper that handles the empty-name edge case. The reviewer must not raise any blocking (🔴) issue on it — this is the false-positive / noise guard. (A stricter `expect_no_findings: true` is also supported, but small models sometimes emit a harmless nit, so we only assert the no-blocking-issue invariant here.)",
+  "must_not_match": ["🔴"]
+}
