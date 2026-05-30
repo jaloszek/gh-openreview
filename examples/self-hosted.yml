@@ -1,0 +1,22 @@
+# Review on a self-hosted runner (free Actions minutes). The action installs
+# opencode and gh on demand if they aren't already on the runner.
+name: OpenCode PR Review (self-hosted)
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: jaloszek/gh-openreview/action@v1
+        with:
+          opencode-api-key: ${{ secrets.OPENCODE_API_KEY }}

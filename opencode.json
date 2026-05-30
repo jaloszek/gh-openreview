@@ -4,7 +4,7 @@
   "permission": {
     "bash": "deny",
     "edit": "allow",
-    "webfetch": "allow",
-    "websearch": "allow"
+    "webfetch": "deny",
+    "websearch": "deny"
   }
 }

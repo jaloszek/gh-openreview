@@ -1,17 +1,18 @@
-# Drop this into a consumer repo at .github/workflows/opencode-review.yml.
-# It owns the triggers + runner; all logic lives in the reusable action.
+# Standard caller workflow. Copy to .github/workflows/opencode-review.yml in
+# your repo and add an OPENCODE_API_KEY secret.
 #
-# Required: set the OPENCODE_API_KEY secret (or supply provider creds another
-# way, e.g. AWS via OIDC for Bedrock — see the action README).
+# Triggers: every PR event, an `@openreview` comment, and the `opencode-review`
+# label. The action gates the comment trigger to trusted authors; the label can
+# only be added by users with write access. See ../SECURITY.md.
 name: OpenCode PR Review
 
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
   issue_comment:
-    types: [created] # enables the `@openreview` on-demand trigger
+    types: [created]
   pull_request_target:
-    types: [labeled] # enables the `opencode-review` label trigger
+    types: [labeled]
 
 concurrency:
   group: opencode-review-${{ github.event.pull_request.number || github.event.issue.number }}
@@ -19,7 +20,7 @@ concurrency:
 
 jobs:
   review:
-    runs-on: ubuntu-latest # ← the configurable knob (e.g. [self-hosted, linux, x64])
+    runs-on: ubuntu-latest # ← change to e.g. [self-hosted, linux, x64] if desired
     permissions:
       contents: read
       pull-requests: write

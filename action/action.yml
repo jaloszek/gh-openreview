@@ -43,7 +43,10 @@ runs:
   using: "composite"
   steps:
     # Normalize the three trigger shapes into should_run + pr number. No token
-    # needed (everything comes from the event payload).
+    # needed (everything comes from the event payload). The `@openreview`
+    # comment trigger is gated to trusted authors so an arbitrary commenter on a
+    # public repo cannot start a secret-bearing run (label adds already require
+    # write access).
     - name: Resolve context
       id: ctx
       shell: bash
@@ -54,11 +57,13 @@ runs:
         PR_ISSUE: ${{ github.event.issue.number }}
         IS_PR_URL: ${{ github.event.issue.pull_request.url }}
         COMMENT_BODY: ${{ github.event.comment.body }}
+        COMMENT_ASSOC: ${{ github.event.comment.author_association }}
         LABEL_NAME: ${{ github.event.label.name }}
         TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
         TRIGGER_LABEL: ${{ inputs.trigger-label }}
       run: |
         run=false; pr=""
+        is_trusted() { case "$1" in OWNER|MEMBER|COLLABORATOR) return 0 ;; *) return 1 ;; esac; }
         case "$EVENT" in
           pull_request|pull_request_target)
             if [ "$ACTION" = "labeled" ]; then
@@ -68,7 +73,11 @@ runs:
             fi ;;
           issue_comment)
             if [ -n "$IS_PR_URL" ] && printf '%s' "$COMMENT_BODY" | grep -qF "$TRIGGER_PHRASE"; then
-              run=true; pr="$PR_ISSUE"
+              if is_trusted "$COMMENT_ASSOC"; then
+                run=true; pr="$PR_ISSUE"
+              else
+                echo "::notice::ignoring $TRIGGER_PHRASE from untrusted author (association: ${COMMENT_ASSOC:-none})"
+              fi
             fi ;;
         esac
         {

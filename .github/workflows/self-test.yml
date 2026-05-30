@@ -1,4 +1,12 @@
-# Dogfood: the action reviews its own PRs.
+# Demo + dogfood: this repo reviews its own pull requests with its own action.
+#
+# Security model (public repo): the OPENCODE_API_KEY secret must never be
+# exposed to untrusted fork code. Therefore:
+#   - pull_request runs only for same-repo branches (fork PRs receive no secret
+#     from GitHub anyway; this just avoids noisy auth failures).
+#   - issue_comment (@openreview) is gated inside the action to trusted authors.
+#   - the `opencode-review` label can only be added by users with write access,
+#     so a maintainer can opt a fork PR in after eyeballing it.
 name: Self-test (OpenCode PR Review)
 
 on:
@@ -15,6 +23,12 @@ concurrency:
 
 jobs:
   review:
+    # Skip fork PRs on the plain pull_request trigger (no secret / untrusted).
+    if: >-
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      github.event_name == 'issue_comment' ||
+      github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     permissions:
       contents: read
