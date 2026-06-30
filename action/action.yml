@@ -1,5 +1,5 @@
 name: "OpenCode PR Review"
-description: "Free-first, provider-agnostic PR reviewer on the OpenCode harness (the CI side of the gh-openreview toolkit)."
+description: "Free-first, provider-agnostic LLM pull-request reviewer on the OpenCode harness."
 author: "jaloszek"
 branding:
   icon: "git-pull-request"

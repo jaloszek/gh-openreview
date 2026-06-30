@@ -14,7 +14,7 @@ S="$SCRATCH_REL"   # scratch path as the model sees it (relative to OR_DIR)
 
 # --- PASS 1: GENERATE --------------------------------------------------------
 info "pass 1/3 — generate (model: $OR_MODEL)"
-oc_run "$OR_DIR" "You are a senior engineer reviewing a GitHub pull request. Find real problems INTRODUCED by this PR.
+oc_run "$OR_DIR" "$OR_MODEL" "You are a senior engineer reviewing a GitHub pull request. Find real problems INTRODUCED by this PR.
 
 IMPORTANT: your read and write tools are sandboxed to the project directory. ALL scratch files must use relative paths under $S/ (e.g. $S/pr.diff) — NEVER /tmp or any absolute path, those are rejected.
 
@@ -60,7 +60,7 @@ fi
 # --- PASS 2: VERIFY (only when there are candidates) -------------------------
 if [ "$HAS_CANDIDATES" = "1" ]; then
   info "pass 2/3 — verify"
-  oc_run "$OR_DIR" "Verification pass. Do NOT look for new issues — that only adds noise.
+  oc_run "$OR_DIR" "$OR_MODEL" "Verification pass. Do NOT look for new issues — that only adds noise.
 
 IMPORTANT: your read/write tools are sandboxed to the project directory — use relative paths only, never /tmp.
 Read the files $S/pr.diff and $S/review-candidates.md with your read tool.
@@ -80,7 +80,7 @@ fi
 
 # --- PASS 3: FORMAT ----------------------------------------------------------
 info "pass 3/3 — format"
-oc_run "$OR_DIR" "Formatting pass. Read $S/review-verified.md with your read tool, then render the FINAL pull-request comment to $S/opencode-review.md with your write tool. Output EXACTLY this structure and nothing outside it.
+oc_run "$OR_DIR" "$OR_MODEL" "Formatting pass. Read $S/review-verified.md with your read tool, then render the FINAL pull-request comment to $S/opencode-review.md with your write tool. Output EXACTLY this structure and nothing outside it.
 
 The FIRST line must be exactly:
 $MARKER

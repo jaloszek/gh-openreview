@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+### Changed (breaking)
+
+- **Refocused the project to a single GitHub Action.** Removed the local `gh`
+  extension surface (`gh openreview review|resolve|inbox|assist|doctor`) and the
+  extension entrypoint. The repo is now exclusively the reusable PR-review
+  action; the engine lives in `lib/` and is wired by `action/action.yml`. If you
+  relied on the local commands, pin the last `v1.0.x` tag.
+
 ## v1.0.2
 
 - Fixed the `model` input being silently ignored. The Action exported the
