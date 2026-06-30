@@ -28,6 +28,7 @@ jobs:
       - uses: jaloszek/gh-openreview/action@v1
         with:
           opencode-api-key: ${{ secrets.OPENCODE_API_KEY }}
-          # model: opencode/deepseek-v4-flash-free
+          # model: opencode/deepseek-v4-flash-free   # free tier (capped); paid: opencode-go/glm-5.2
+          # cheap-model: opencode-go/deepseek-v4-flash  # routes prep + verify to a cheap tier
           # trigger-phrase: "@openreview"
           # trigger-label: "opencode-review"

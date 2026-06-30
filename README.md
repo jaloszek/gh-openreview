@@ -122,9 +122,29 @@ the cheap tier. Leaving `cheap-model` empty preserves the original behaviour
 
 ```yaml
 with:
-  model: opencode-go/glm-5.2                  # strong: the review
-  cheap-model: opencode/deepseek-v4-flash-free # cheap: intent + verify
+  model: opencode-go/glm-5.2            # strong: the review
+  cheap-model: opencode-go/deepseek-v4-flash  # cheap: intent + verify
 ```
+
+#### Picking a cheap model on OpenCode (free vs Go)
+
+OpenCode serves the same model through two billing surfaces, and **the tier is
+decided by the model-ID prefix, not your account**:
+
+- `opencode/deepseek-v4-flash-free` — **free**, but with a hard, undisclosed
+  usage cap (requests start failing with `Free usage exceeded, subscribe to Go`),
+  "limited-time" availability, and data that **may be retained**. Fine for local
+  or low-volume use; risky for CI, where a burst of PRs across the
+  prep/generate/verify passes can trip the cap and fail the run.
+- `opencode-go/deepseek-v4-flash` — the **same model** on the paid **Go** plan
+  (~$10/mo): generous limits (~31k requests / 5h for flash), zero data retention,
+  stable. The sweet spot for a CI reviewer's cheap tier.
+
+> ⚠️ Even with an active Go subscription, a `…-free` model ID still draws from
+> the **free** tier and hits the free cap. On a paid plan, use the
+> `opencode-go/…` IDs for **both** `model` and `cheap-model`. The action's
+> built-in default (`opencode/deepseek-v4-flash-free`) is free-tier — override it
+> for anything beyond light/personal use.
 
 **Config precedence** (your own config is never overwritten): `opencode-config`
 input → consumer repo `./opencode.json` → `~/.config/opencode/` → the bundled
