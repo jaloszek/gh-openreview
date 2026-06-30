@@ -156,16 +156,24 @@ runs:
       run: ${{ github.action_path }}/../lib/gather.sh
 
     - name: Review passes (no GitHub token)
+      id: passes
       if: steps.ctx.outputs.should_run == 'true'
-      continue-on-error: true
       shell: bash
       env:
         OPENCODE_API_KEY: ${{ inputs.opencode-api-key }}
         OPENCODE_CONFIG: ${{ inputs.opencode-config }}
       run: ${{ github.action_path }}/../lib/passes.sh
 
+    # Deterministic render — no model call, no token. Builds the final comment
+    # from the verified findings. Runs only when the passes succeeded, so an
+    # engine failure never produces a misleading "no issues" comment.
+    - name: Render review comment
+      if: steps.ctx.outputs.should_run == 'true' && steps.passes.outcome == 'success'
+      shell: bash
+      run: ${{ github.action_path }}/../lib/render.sh
+
     - name: Post review comment
-      if: steps.ctx.outputs.should_run == 'true'
+      if: steps.ctx.outputs.should_run == 'true' && steps.passes.outcome == 'success'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
