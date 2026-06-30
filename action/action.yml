@@ -43,7 +43,7 @@ inputs:
     required: false
     default: "opencode-review"
   marker-header:
-    description: "Identity/dedup header (first line of the posted comment). Keep the text 'OpenCode Review' for reliable dedup."
+    description: "Identity/dedup header (first line of the posted comment). The dedup token is derived from this automatically, so any custom header works."
     required: false
     default: "## 🤖 OpenCode Review"
   bot-login:
@@ -181,6 +181,10 @@ runs:
           esac
           echo "OPENREVIEW_DIFF_MAX_LINES=$DIFF_MAX_LINES"
           echo "MARKER=$MARKER"
+          # Dedup token: the marker text with leading '#'/spaces stripped, so a
+          # custom marker-header works without manually keeping a magic substring.
+          MARKER_MATCH=$(printf '%s' "$MARKER" | sed -E 's/^#+[[:space:]]*//')
+          echo "MARKER_MATCH=$MARKER_MATCH"
           echo "BOT_LOGIN=$BOT"
           echo "OR_DIR=$GITHUB_WORKSPACE"
           echo "SCRATCH_REL=.openreview-tmp"

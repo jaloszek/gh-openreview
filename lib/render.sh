@@ -55,6 +55,9 @@ awk -v prdesc="$PRDESC" '
     else if ($0 ~ /^conf:/)  { sub(/^conf:[[:space:]]*/,"");  conf=tolower($0) }
     else if ($0 ~ /^title:/) { sub(/^title:[[:space:]]*/,""); title=$0 }
     else if ($0 ~ /^body:/)  { sub(/^body:[[:space:]]*/,"");  body=$0 }
+    # Defensive: if the model spills the body across lines despite the
+    # single-line contract, fold continuations in rather than dropping them.
+    else if (body != "")     { body = body " " $0 }
   }
   END { flush() }
 ' "$IN" | LC_ALL=C sort -t$'\t' -k1,1 -k7,7n > "$TSV"
