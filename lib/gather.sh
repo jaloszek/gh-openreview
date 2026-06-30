@@ -12,7 +12,9 @@ set -euo pipefail
 : "${OR_REPO:?OR_REPO required}"
 : "${OR_PR:?OR_PR required}"
 : "${SCRATCH:?SCRATCH required}"
-MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
+# Exported so jq can read it via env.MARKER_MATCH — never string-interpolate a
+# possibly-quote-bearing value into the jq filter.
+export MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
 
 # Default path excludes: machine-generated / vendored / lockfile noise that
 # inflates token cost without being meaningfully reviewable.
@@ -63,7 +65,7 @@ fi
 # Most recent prior review (matched by the marker substring, any author) so the
 # reviewer can stay silent about findings since fixed. Empty on the first run.
 gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
-  --jq "[.[] | select(.body | contains(\"$MARKER_MATCH\"))] | (.[-1].body // \"\")" \
+  --jq '[.[] | select(.body | contains(env.MARKER_MATCH))] | (.[-1].body // "")' \
   > "$SCRATCH/prev-review.md" 2>/dev/null || true
 [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
 
@@ -113,7 +115,7 @@ OWNER="${OR_REPO%%/*}"; REPO="${OR_REPO##*/}"
   echo ""
   echo "## General comments"
   gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
-    --jq ".[] | select(.body | contains(\"$MARKER_MATCH\") | not) | \"@\(.user.login): \(.body)\"" \
+    --jq '.[] | select(.body | contains(env.MARKER_MATCH) | not) | "@\(.user.login): \(.body)"' \
     2>/dev/null || true
 } > "$SCRATCH/pr-comments.md" 2>/dev/null || true
 [ -s "$SCRATCH/pr-comments.md" ] || echo "(no discussion yet)" > "$SCRATCH/pr-comments.md"
