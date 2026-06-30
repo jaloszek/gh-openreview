@@ -55,7 +55,8 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 |---|---|---|
 | `opencode-api-key` | `""` | OpenCode Zen API key. Omit when supplying provider creds another way (e.g. AWS env/OIDC for Bedrock). |
 | `opencode-config` | `""` | Path to an `opencode.json`. Falls back to the consumer repo's config, then the bundled free-model config. |
-| `model` | `opencode/deepseek-v4-flash-free` | Model id for the analysis pass. |
+| `model` | `opencode/deepseek-v4-flash-free` | Model id for the analysis (generate) pass. |
+| `verify-model` | `""` (→ `model`) | Cheaper model id for the verification pass. Empty reuses `model`. |
 | `github-token` | `${{ github.token }}` | Used only by the gather + post steps. |
 | `trigger-phrase` | `@openreview` | Comment body that triggers an on-demand review. |
 | `trigger-label` | `opencode-review` | Label whose addition triggers a review. |

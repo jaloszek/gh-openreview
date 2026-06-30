@@ -15,9 +15,13 @@ inputs:
     required: false
     default: ""
   model:
-    description: "opencode model id."
+    description: "opencode model id for the analysis (generate) pass."
     required: false
     default: "opencode/deepseek-v4-flash-free"
+  verify-model:
+    description: "opencode model id for the (cheaper) verification pass. Defaults to `model` when empty."
+    required: false
+    default: ""
   github-token:
     description: "Token used to fetch context and post the comment."
     required: false
@@ -127,6 +131,7 @@ runs:
       shell: bash
       env:
         MODEL: ${{ inputs.model }}
+        VERIFY_MODEL: ${{ inputs.verify-model }}
         MARKER: ${{ inputs.marker-header }}
         BOT: ${{ inputs.bot-login }}
       run: |
@@ -139,6 +144,8 @@ runs:
           # and the `model` input was ignored (every run fell back to the free
           # default). OPENREVIEW_MODEL is the precedence key resolve_model honors.
           echo "OPENREVIEW_MODEL=$MODEL"
+          # Verify pass runs on a (typically cheaper) tier; empty -> main model.
+          [ -n "$VERIFY_MODEL" ] && echo "OPENREVIEW_VERIFY_MODEL=$VERIFY_MODEL"
           echo "MARKER=$MARKER"
           echo "BOT_LOGIN=$BOT"
           echo "OR_DIR=$GITHUB_WORKSPACE"
