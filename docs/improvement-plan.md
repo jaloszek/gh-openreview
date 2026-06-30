@@ -299,7 +299,12 @@ These extend Part 2; ordered by ROI for our architecture.
   rubric + conventions + tool defs *before* the variable diff and breakpoint on
   the last unchanging block. (Provider-dependent through OpenCode — verify
   support first.)
-- **Q. Cost-routing with a dedicated cheap model 💸** (generalizes `verify-model`).
+- **Q. Cost-routing with a dedicated cheap model 💸** — ✅ **partially shipped**:
+  `cheap-model` input added; it is now the default verify tier and runs an
+  **intent-compression** prep step (distils linked issues + PR body + commits into
+  a brief the strong generate pass reads instead of the raw text). Still backlog:
+  file summarization, candidate triage/dedup, and PR-description on the cheap tier.
+  (generalizes `verify-model`).
   Expose two model tiers as inputs — `model` (strong, for the core analysis) and
   `cheap-model` (small/fast/free). **When `cheap-model` is provided, the engine
   routes every non-analysis sub-task to it**, reserving the strong model only for

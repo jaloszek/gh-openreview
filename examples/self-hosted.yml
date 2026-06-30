@@ -20,3 +20,8 @@ jobs:
       - uses: jaloszek/gh-openreview/action@v1
         with:
           opencode-api-key: ${{ secrets.OPENCODE_API_KEY }}
+          # Paid OpenCode Go tier: strong model for the review, a cheap model for
+          # the prep + verify passes. Use opencode-go/... IDs for BOTH — a
+          # `…-free` ID draws from the free tier (and its cap) even with Go.
+          model: opencode-go/glm-5.2
+          cheap-model: opencode-go/deepseek-v4-flash

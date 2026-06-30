@@ -10,13 +10,13 @@ set -uo pipefail
 METRICS="$SCRATCH/metrics.env"
 
 # Defaults so a partial run still reports something sane.
-DIFF_LINES=0 PASS1_SECS=0 PASS2_SECS=0
-OR_MODEL="" OR_VERIFY_MODEL=""
+DIFF_LINES=0 PREP_SECS=0 PASS1_SECS=0 PASS2_SECS=0
+OR_MODEL="" OR_VERIFY_MODEL="" OR_CHEAP_MODEL=""
 OR_FINDINGS_IMPORTANT=0 OR_FINDINGS_NIT=0 OR_FINDINGS_TOTAL=0
 # shellcheck disable=SC1090
 [ -f "$METRICS" ] && . "$METRICS"
 
-total_secs=$(( PASS1_SECS + PASS2_SECS ))
+total_secs=$(( PREP_SECS + PASS1_SECS + PASS2_SECS ))
 
 # Action outputs (consumed via steps.<id>.outputs.* in action.yml).
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -38,6 +38,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "|---|---|"
     echo "| Findings | **$OR_FINDINGS_IMPORTANT** important · $OR_FINDINGS_NIT nits |"
     echo "| Diff size | $DIFF_LINES lines |"
+    if [ -n "$OR_CHEAP_MODEL" ]; then
+      echo "| Prep (intent) | ${PREP_SECS}s ($OR_CHEAP_MODEL) |"
+    fi
     echo "| Generate pass | ${PASS1_SECS}s ($OR_MODEL) |"
     echo "| Verify pass | ${PASS2_SECS}s ($OR_VERIFY_MODEL) |"
     echo "| Total LLM time | ${total_secs}s |"

@@ -9,6 +9,7 @@ set -euo pipefail
 
 : "${OR_DIR:?}"; : "${SCRATCH:?}"; : "${SCRATCH_REL:?}"
 resolve_model
+resolve_cheap_model
 resolve_verify_model
 prepare_opencode_config "$OR_DIR"
 S="$SCRATCH_REL"   # scratch path as the model sees it (relative to OR_DIR)
@@ -19,8 +20,44 @@ METRICS="$SCRATCH/metrics.env"
 {
   echo "OR_MODEL=$OR_MODEL"
   echo "OR_VERIFY_MODEL=$OR_VERIFY_MODEL"
+  echo "OR_CHEAP_MODEL=$OR_CHEAP_MODEL"
+  echo "PREP_SECS=0"
   echo "PASS2_SECS=0"
 } >> "$METRICS"
+
+# --- PREP (cheap tier): intent compression ----------------------------------
+# When a cheap model is configured, distil the requirement context (linked
+# issues + PR body + commits) into a short brief so the strong generate pass
+# reads ~8 lines instead of the raw issue/commit text. Skipped (and the strong
+# pass reads the raw files) when no cheap model is set, preserving prior cost.
+# Clear any stale brief first: on a persistent scratch dir (self-hosted runner,
+# local dev) a prior run's intent.md must not survive a prep failure and feed
+# outdated requirements to the generate pass.
+rm -f "$SCRATCH/intent.md"
+if [ -n "$OR_CHEAP_MODEL" ]; then
+  info "prep — intent compression (model: $OR_CHEAP_MODEL)"
+  _tp=$SECONDS
+  oc_run "$OR_DIR" "$OR_CHEAP_MODEL" "You are preparing context for a code reviewer. Your read/write tools are sandboxed to the project directory — use relative paths under $S/ only, never /tmp.
+
+Read $S/linked-issues.md (the issue(s) this PR closes, may say '(no linked issues)'), $S/pr-meta.json (PR title + body), and $S/pr-commits.md (commit messages).
+
+Write a SHORT brief (at most ~8 lines) to $S/intent.md capturing:
+1. What this PR is supposed to accomplish.
+2. Any explicit acceptance criteria or constraints stated in the issue/PR.
+3. What a reviewer should check the diff against.
+Be strictly factual — do NOT invent requirements. If there is no linked issue, infer intent from the title/body/commits. Output ONLY the brief to $S/intent.md. Do not review code, do not post anything." \
+    || { warn "prep (intent compression) failed — falling back to raw context"; rm -f "$SCRATCH/intent.md"; }
+  echo "PREP_SECS=$((SECONDS - _tp))" >> "$METRICS"
+fi
+
+# Pass-1 requirement context: the distilled brief when cheap routing produced
+# one, otherwise the raw issue/commit files (unchanged behavior).
+if [ -n "$OR_CHEAP_MODEL" ] && [ -s "$SCRATCH/intent.md" ]; then
+  INTENT_CONTEXT="- $S/intent.md — a distilled brief of the PR's intent (pre-compressed from the linked issues, PR body, and commits). Treat this as THE REQUIREMENT; judge whether the diff does what it describes. You need not re-read the raw issue/commit files."
+else
+  INTENT_CONTEXT="- $S/linked-issues.md — the issue(s) this PR closes. Treat this as THE REQUIREMENT: judge whether the diff actually does what was asked, and flag gaps against it.
+- $S/pr-commits.md — the branch's commit messages (the author's stated intent)."
+fi
 
 # The exact output contract shared by both passes and parsed by render.sh.
 FORMAT_SPEC="Write findings in this EXACT record format and nothing else outside it. One record per finding:
@@ -47,8 +84,7 @@ IMPORTANT: your read and write tools are sandboxed to the project directory. ALL
 Read the context with your read tool:
 - $S/pr.diff — the diff to review (review ONLY changes in this diff).
 - $S/pr-meta.json — the PR title, body, and changed files.
-- $S/linked-issues.md — the issue(s) this PR closes. Treat this as THE REQUIREMENT: judge whether the diff actually does what was asked, and flag gaps against it.
-- $S/pr-commits.md — the branch's commit messages (the author's stated intent).
+$INTENT_CONTEXT
 - $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
 - $S/prev-review.md — your previous review of an EARLIER version of this PR (may say '(no previous review)').
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.

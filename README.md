@@ -56,7 +56,8 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `opencode-api-key` | `""` | OpenCode Zen API key. Omit when supplying provider creds another way (e.g. AWS env/OIDC for Bedrock). |
 | `opencode-config` | `""` | Path to an `opencode.json`. Falls back to the consumer repo's config, then the bundled free-model config. |
 | `model` | `opencode/deepseek-v4-flash-free` | Model id for the analysis (generate) pass. |
-| `verify-model` | `""` (→ `model`) | Cheaper model id for the verification pass. Empty reuses `model`. |
+| `cheap-model` | `""` | Small/fast/free model the engine routes prep work to (intent compression) and uses as the default verify tier. Empty disables cheap routing. |
+| `verify-model` | `""` | Model id for the verification pass. Empty falls back to `cheap-model`, then `model`. |
 | `github-token` | `${{ github.token }}` | Used only by the gather + post steps. |
 | `trigger-phrase` | `@openreview` | Comment body that triggers an on-demand review. |
 | `trigger-label` | `opencode-review` | Label whose addition triggers a review. |
@@ -103,6 +104,47 @@ The action delegates credential resolution to opencode. All of these work:
 - **Custom gateway / OpenAI-compatible / AWS Bedrock** — configure a `provider`
   block in an `opencode.json` and pass it via `opencode-config`. Bedrock uses the
   standard AWS credential chain (`AWS_*`, OIDC) with no extra setup here.
+
+### Cost routing with a cheap model
+
+Set `cheap-model` to a small/fast/free model to keep the strong `model` focused
+on the actual review. When provided, the engine:
+
+- runs an **intent-compression** prep step on the cheap model that distils the
+  linked issues, PR body, and commits into a short brief — so the strong generate
+  pass reads ~8 lines of requirement context instead of the raw text, and
+- runs the **verification pass** on the cheap model (unless `verify-model`
+  overrides it).
+
+The expensive reasoning still runs on `model`; only the prep/verify work moves to
+the cheap tier. Leaving `cheap-model` empty preserves the original behaviour
+(everything on `model`, no extra calls).
+
+```yaml
+with:
+  model: opencode-go/glm-5.2            # strong: the review
+  cheap-model: opencode-go/deepseek-v4-flash  # cheap: intent + verify
+```
+
+#### Picking a cheap model on OpenCode (free vs Go)
+
+OpenCode serves the same model through two billing surfaces, and **the tier is
+decided by the model-ID prefix, not your account**:
+
+- `opencode/deepseek-v4-flash-free` — **free**, but with a hard, undisclosed
+  usage cap (requests start failing with `Free usage exceeded, subscribe to Go`),
+  "limited-time" availability, and data that **may be retained**. Fine for local
+  or low-volume use; risky for CI, where a burst of PRs across the
+  prep/generate/verify passes can trip the cap and fail the run.
+- `opencode-go/deepseek-v4-flash` — the **same model** on the paid **Go** plan
+  (~$10/mo): generous limits (~31k requests / 5h for flash), zero data retention,
+  stable. The sweet spot for a CI reviewer's cheap tier.
+
+> ⚠️ Even with an active Go subscription, a `…-free` model ID still draws from
+> the **free** tier and hits the free cap. On a paid plan, use the
+> `opencode-go/…` IDs for **both** `model` and `cheap-model`. The action's
+> built-in default (`opencode/deepseek-v4-flash-free`) is free-tier — override it
+> for anything beyond light/personal use.
 
 **Config precedence** (your own config is never overwritten): `opencode-config`
 input → consumer repo `./opencode.json` → `~/.config/opencode/` → the bundled
