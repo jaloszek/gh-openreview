@@ -33,7 +33,7 @@ resolve_model() {
 }
 
 # Verify-pass model: cheaper tier for the verification pass. Falls back to the
-# bundled free model, then to the main model if no free tier is configured.
+# main model, then to the bundled free model if neither is set.
 resolve_verify_model() {
   OR_VERIFY_MODEL="${OPENREVIEW_VERIFY_MODEL:-${OR_MODEL:-}}"
   [ -n "$OR_VERIFY_MODEL" ] || OR_VERIFY_MODEL="opencode/deepseek-v4-flash-free"

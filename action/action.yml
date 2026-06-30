@@ -176,7 +176,7 @@ runs:
           # Diff excludes: empty -> engine built-in defaults; `none` -> disable.
           case "$DIFF_EXCLUDE" in
             "") : ;;
-            none) echo "OPENREVIEW_DIFF_EXCLUDE=" ;;
+            [Nn][Oo][Nn][Ee]) echo "OPENREVIEW_DIFF_EXCLUDE=" ;;
             *) echo "OPENREVIEW_DIFF_EXCLUDE=$DIFF_EXCLUDE" ;;
           esac
           echo "OPENREVIEW_DIFF_MAX_LINES=$DIFF_MAX_LINES"

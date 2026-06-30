@@ -112,8 +112,10 @@ else
   info "pass 2/2 — skipped (no candidates)"
 fi
 
-# Signal a hard generate failure (no usable output) to the caller so the action
-# can avoid posting a garbage comment. Verify failures fall back gracefully above.
-if [ "$GENERATE_FAILED" = "1" ] && [ ! -s "$SCRATCH/review-verified.md" ]; then
-  die "review engine failed: generate pass produced no output"
+# A hard generate failure must abort so the action never posts a comment built
+# from a failed run. The gate above always leaves a non-empty review-verified.md
+# (at least the @@PRDESC line), so an emptiness check would NOT catch this —
+# fail purely on the generate exit status. Verify failures fall back gracefully.
+if [ "$GENERATE_FAILED" = "1" ]; then
+  die "review engine failed: generate pass returned non-zero"
 fi
