@@ -202,25 +202,134 @@ so repeated context isn't re-billed at full rate.
 
 ## Part 3 — Implementation order (most-obvious-first)
 
-1. **Refactor to action-only** (Part 1) — clears the surface, no behavior risk.
-2. **A. Deterministic `render.sh`** — biggest cost+predictability+quality win.
-3. **B + C. Timeout/retry + don't-post-on-failure** — robustness, low risk.
-4. **D. Telemetry → step summary + outputs** — makes everything measurable.
-5. **F. Diff capping / path filtering** — cost, low risk.
-6. **E. Model tiering** — cost.
-7. **I. Richer gather context** — quality (the user-requested input expansion).
-8. **G. Incremental review** — cost/predictability (needs SHA bookkeeping).
-9. **H + K. Read-files + confidence gating** — quality.
-10. **J. Inline comments** — quality (larger change; opt-in).
-11. **L. Prompt caching** — cost (provider-dependent; verify support).
+Status on `refactor/action-only-reviewer`:
 
-Each lands as its own commit on `refactor/action-only-reviewer`.
+| # | Item | Status |
+|---|---|---|
+| 1 | Refactor to action-only (Part 1) | ✅ done |
+| 2 | A. Deterministic `render.sh` (drops the LLM format pass) | ✅ done |
+| 3 | B + C. Per-pass timeout/retry + never-post-on-failure | ✅ done |
+| 4 | D. Telemetry → step summary + outputs (timing/findings/diff size) | ✅ done |
+| 5 | F. Diff capping / path filtering | ✅ done |
+| 6 | E. Model tiering (`verify-model` input) | ✅ done |
+| 7 | I/H. Richer gather context + read-files prompt | ✅ done |
+| 8 | G. Incremental review (since `last_reviewed_sha`, patch-id skip) | ⏳ backlog |
+| 9 | K. Confidence gating in render | ⏳ backlog |
+| 10 | J. Inline comments (reviews API) | ⏳ backlog |
+| 11 | L. Prompt caching | ⏳ backlog |
+| 12 | M+. Research-derived items (see Part 4) | ⏳ backlog |
+
+Each item landed as its own commit.
 
 ---
 
 ## Part 4 — Competitive landscape (deep research)
 
-_Pending — being filled from the research pass. Will cover CodeRabbit, Greptile,
-Qodo PR-Agent, Sourcery, Cursor BugBot, Copilot review, Claude Code Action, etc.:
-context-gathering (RAG/AST vs diff), noise control, incremental review, inline
-anchoring, cost/determinism patterns — and which patterns to copy here._
+Synthesis of how leading automated reviewers are built (2026), and what to
+borrow. Confidence: **[V]** verified from vendor docs/eng blog/source; **[VC]**
+vendor self-claim; **[S]** speculative/secondary.
+
+### How the field is split
+
+Two camps. The most engineering-credible tools (**Cursor BugBot**, **GitHub
+Copilot review**) moved from fixed pipelines to **agentic, tool-calling, runtime-
+context** designs. The graph/RAG camp (**Greptile, CodeRabbit, Qodo, Ellipsis,
+Bito**) competes on **pre-built whole-repo context**. The unresolved tension is
+false-positive volume: graph tools catch more but flag more noise (one third-
+party benchmark: Greptile ~82% bug catch but ~11 FPs/run vs CodeRabbit ~44% / ~2
+FPs — **[VC]**, directional only).
+
+### Patterns that map directly onto our two-pass + render design
+
+- **[V] Structured output → deterministic formatting.** Qodo has the LLM emit a
+  fixed Pydantic/YAML schema and renders the Markdown comment in code — never lets
+  the model format the final comment. *We already did this (render.sh). Validated.*
+- **[V] Multi-pass verification.** CodeRabbit (judge stage), Qodo 2.0 (judge
+  agent), Cursor (validator model), Ellipsis (hallucination filter). *We do
+  generate→verify. Validated.*
+- **[V] Intent context is the cheapest, highest-ROI input — beats code context.**
+  ContextCRBench: PR description alone +72% F1, issue+PR +78%, vs surrounding
+  *code* +64% (model-dependent; OSS models sometimes regress).
+  (arxiv 2511.07017). *We added linked-issues + commits in task 7. Validated.*
+- **[V] Dedup against existing comments; don't repeat or re-raise.** BugBot reads
+  existing PR comments as a "do-not-repeat" list (~9/10 → ~1 dupes). *We feed
+  [OPEN]/[RESOLVED] threads to the prompt. Validated.*
+
+### The standout finding (worth a dedicated future epic)
+
+- **⭐ [V] Do NOT use an LLM to self-rate "is this a nit" — it's near-random.**
+  Greptile's verified negative result. What worked: embed every posted comment in
+  a per-team vector DB; **suppress a new comment if cosine-similar to ≥3 unique
+  downvoted comments**, pass if similar to ≥3 upvoted, else default-pass. Address
+  rate 19% → 55% in two weeks. This is a learning-from-feedback loop, not a prompt
+  tweak. (zenml.io Greptile case study.)
+
+### New backlog items derived from the research
+
+These extend Part 2; ordered by ROI for our architecture.
+
+- **M. Batched 0–10 self-reflection re-rank in the verify pass 🎯** (Qodo, OSS,
+  most directly copyable). Re-present *all* candidates together, score each 0–10
+  with rationale, drop below a configurable threshold. Better-calibrated than the
+  current per-finding keep/drop. Low effort — it's a prompt change to pass 2 plus
+  a numeric gate in render.
+- **N. Evidence-gated findings 🎯** (CodeRabbit "receipts", Ellipsis Evidence).
+  Require each finding to carry a concrete artifact (a grep/`ast-grep` hit or a
+  quoted diff line); drop findings whose evidence can't be re-confirmed. Kills the
+  plausible-but-wrong class.
+- **O. Linter/SAST grounding + judge 🎯** (CodeRabbit runs 20–40 tools; Copilot
+  runs CodeQL+ESLint). Run deterministic tools first (`semgrep`, `ast-grep`,
+  `shellcheck`, `actionlint`), feed their structured findings into pass 1 so the
+  LLM triages real, line-anchored signal instead of inventing it.
+- **G′. Incremental review, properly 💸🔮** (CodeRabbit `auto_incremental_review`,
+  BugBot **patch-id skip**). Persist `last_reviewed_sha` in the marker comment
+  (HTML comment); on `synchronize` review `last_reviewed_sha..head`; **hash the
+  normalized patch and skip entirely if already reviewed.** Cleanest cost win for
+  push-heavy PRs.
+- **J′. Inline comments — API mechanics 🎯.** Anchored comments go through
+  `POST /repos/{o}/{r}/pulls/{n}/reviews` with a `comments[]` array (atomic, one
+  review). `line` MUST be a line in the diff or it 422s — **fuzzy-map and drop
+  unmappable rather than mis-anchor** (qodo `find_line_number_of_relevant_line`,
+  cutoff 0.93). Use ` ```suggestion ` fences for committable fixes. Across runs,
+  minimize the prior run's comments as `OUTDATED` (GraphQL `minimizeComment`) and
+  edit a persistent summary comment in place.
+- **L′. Prompt caching — exact mechanics 💸.** Anthropic: `cache_control`
+  ephemeral, read = 0.1× input, 5m write = 1.25×, min cacheable prefix 1024
+  tokens, ≤4 breakpoints, `tools→system→messages` hierarchy. Put the static
+  rubric + conventions + tool defs *before* the variable diff and breakpoint on
+  the last unchanging block. (Provider-dependent through OpenCode — verify
+  support first.)
+- **P. Diff compression ladder 💸** (qodo PR-Agent — copy whole-cloth). Optimistic-
+  first; rank files by language then token count; soft/hard buffers; degrade full
+  patch → no-context → deletion-stripped → filename-only → dropped. Our current
+  line-cap (task 5) is the crude version of this.
+- **Telemetry follow-up 📊.** OpenCode headless emits JSONL
+  (`opencode run --format json --auto`); the `step_finish` event carries cost +
+  tokens. Capture it for exact per-pass token/cost (pin a recent OpenCode — older
+  builds could exit before the final `step_finish`, issue #26855). Prefer
+  `serve` + SDK for robust structured output.
+
+### Engine-specific notes (OpenCode)
+
+- Read-only reviewer config (already bundled): `tools:{write:false,bash:false}` +
+  `permission:{edit:"deny",bash:"deny"}`; `--auto` is essential in CI to
+  auto-approve permissions.
+- House review standards belong in `AGENTS.md` (OpenCode reads it; CLAUDE.md is
+  the fallback) — our prompt already points the model at CLAUDE.md/`conventions/`.
+
+### Sources worth reading in full
+
+- Ellipsis production architecture (ZenML write-up) — most honest real-world design.
+- `qodo-ai/pr-agent` `algo/` source — directly copyable compression + line-mapping + posting.
+- Greptile "memory and learning" + the ZenML embeddings-suppression case study.
+- CodeRabbit "agentic vs RAG" and "explainable reviews" eng blogs.
+- `anthropics/claude-code-action` — closest design to ours (MCP inline-comment tool + Haiku classifier).
+
+### Caveats
+
+Headline accuracy numbers are vendor/vendor-adjacent self-reports (directional
+only). Graph-DB/parser internals of Greptile and CodeRabbit are undisclosed.
+Timer-debounce of rapid pushes is an inferred DIY pattern, not vendor-documented
+(patch-id skip + since-last-sha diffing achieve the same end). "Suppress
+pre-existing issues" has no vendor flag — it's a DIY diff-hunk line-range
+intersection (and CodeRabbit deliberately does the opposite via its graph).
