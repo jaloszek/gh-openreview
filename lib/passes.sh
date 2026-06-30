@@ -46,7 +46,7 @@ Write a SHORT brief (at most ~8 lines) to $S/intent.md capturing:
 2. Any explicit acceptance criteria or constraints stated in the issue/PR.
 3. What a reviewer should check the diff against.
 Be strictly factual — do NOT invent requirements. If there is no linked issue, infer intent from the title/body/commits. Output ONLY the brief to $S/intent.md. Do not review code, do not post anything." \
-    || warn "prep (intent compression) failed — falling back to raw context"
+    || { warn "prep (intent compression) failed — falling back to raw context"; rm -f "$SCRATCH/intent.md"; }
   echo "PREP_SECS=$((SECONDS - _tp))" >> "$METRICS"
 fi
 
