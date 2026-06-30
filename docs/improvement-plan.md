@@ -299,6 +299,34 @@ These extend Part 2; ordered by ROI for our architecture.
   rubric + conventions + tool defs *before* the variable diff and breakpoint on
   the last unchanging block. (Provider-dependent through OpenCode — verify
   support first.)
+- **Q. Cost-routing with a dedicated cheap model 💸** (generalizes `verify-model`).
+  Expose two model tiers as inputs — `model` (strong, for the core analysis) and
+  `cheap-model` (small/fast/free). **When `cheap-model` is provided, the engine
+  routes every non-analysis sub-task to it**, reserving the strong model only for
+  the generate (and optionally verify) reasoning. Candidate prep tasks to route to
+  the cheap tier:
+  - **Intent compression** — distil the linked issues + PR body + commit messages
+    into a few-line "what this PR is supposed to do" brief (the high-ROI intent
+    context, §2) instead of dumping raw text into the strong-model prompt.
+  - **Diff/file summarization** — for large changed files, have the cheap model
+    summarise the surrounding context so the strong pass spends its budget on the
+    diff, not on re-reading unchanged code (CodeRabbit's "context enrichment is
+    80–90% of tokens, done by cheap models" pattern).
+  - **Candidate triage / dedup** — a cheap-model first pass over the prev-review
+    and existing comments to pre-drop already-raised/resolved points before the
+    strong model sees them.
+  - **Verify pass** — already covered by `verify-model`; fold it under the same
+    `cheap-model` default so one input configures the whole cheap tier.
+  - **PR-description suggestion** — generate it on the cheap tier; it's not
+    correctness-critical.
+
+  Design: `cheap-model` empty ⇒ today's behaviour (everything on `model`, no extra
+  calls). Set ⇒ the engine inserts the cheap prep steps and the strong pass
+  receives pre-digested context, so total strong-model tokens drop sharply on big
+  PRs while quality holds (the expensive reasoning still runs on the strong
+  model). `verify-model` becomes an optional override of the cheap tier for the
+  verify pass specifically. Pairs naturally with **L′ prompt caching** (cache the
+  digested brief) and **P diff compression**.
 - **P. Diff compression ladder 💸** (qodo PR-Agent — copy whole-cloth). Optimistic-
   first; rank files by language then token count; soft/hard buffers; degrade full
   patch → no-context → deletion-stripped → filename-only → dropped. Our current
