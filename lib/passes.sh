@@ -30,6 +30,10 @@ METRICS="$SCRATCH/metrics.env"
 # issues + PR body + commits) into a short brief so the strong generate pass
 # reads ~8 lines instead of the raw issue/commit text. Skipped (and the strong
 # pass reads the raw files) when no cheap model is set, preserving prior cost.
+# Clear any stale brief first: on a persistent scratch dir (self-hosted runner,
+# local dev) a prior run's intent.md must not survive a prep failure and feed
+# outdated requirements to the generate pass.
+rm -f "$SCRATCH/intent.md"
 if [ -n "$OR_CHEAP_MODEL" ]; then
   info "prep — intent compression (model: $OR_CHEAP_MODEL)"
   _tp=$SECONDS
