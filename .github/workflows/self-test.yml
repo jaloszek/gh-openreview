@@ -38,3 +38,6 @@ jobs:
       - uses: ./action
         with:
           opencode-api-key: ${{ secrets.OPENCODE_API_KEY }}
+          # Dogfood cost routing: prep + verify run on the cheap tier. Same free
+          # model here, which still exercises the intent-compression path.
+          cheap-model: opencode/deepseek-v4-flash-free
