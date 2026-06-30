@@ -101,10 +101,10 @@ DROP everything else. Recalibrate severity conservatively — when unsure, 'nit'
 $FORMAT_SPEC
 
 Write the survivors to $S/review-verified.md with your write tool, preserving the @@PRDESC section from the candidates. If none survive, write no @@FINDING blocks (still keep @@PRDESC). Do not post anything. Do not edit or commit tracked files." \
-    || warn "pass 2 (verify) failed — falling back to unverified candidates"
-  # If verify produced nothing usable, fall back to the candidates so we don't
-  # silently drop real findings on a transient verify failure.
-  if [ ! -s "$SCRATCH/review-verified.md" ]; then
+    || { VERIFY_FAILED=1; warn "pass 2 (verify) failed — falling back to unverified candidates"; }
+  # Fall back to the candidates if verify produced nothing usable OR failed — a
+  # crash mid-write can leave a partial review-verified.md that -s alone passes.
+  if [ ! -s "$SCRATCH/review-verified.md" ] || [ "${VERIFY_FAILED:-0}" = "1" ]; then
     cp "$SCRATCH/review-candidates.md" "$SCRATCH/review-verified.md" 2>/dev/null || true
   fi
   echo "PASS2_SECS=$((SECONDS - _t1))" >> "$METRICS"
