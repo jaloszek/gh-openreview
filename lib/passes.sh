@@ -47,6 +47,9 @@ IMPORTANT: your read and write tools are sandboxed to the project directory. ALL
 Read the context with your read tool:
 - $S/pr.diff — the diff to review (review ONLY changes in this diff).
 - $S/pr-meta.json — the PR title, body, and changed files.
+- $S/linked-issues.md — the issue(s) this PR closes. Treat this as THE REQUIREMENT: judge whether the diff actually does what was asked, and flag gaps against it.
+- $S/pr-commits.md — the branch's commit messages (the author's stated intent).
+- $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
 - $S/prev-review.md — your previous review of an EARLIER version of this PR (may say '(no previous review)').
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.
 - CLAUDE.md and anything under conventions/ if present (project root).

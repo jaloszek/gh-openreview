@@ -65,6 +65,57 @@ gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
   > "$SCRATCH/prev-review.md" 2>/dev/null || true
 [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
 
+# --- Richer context: intent + existing discussion ----------------------------
+# All of this is best-effort; a failure here must never abort the review.
+
+# Commit messages on the branch — the author's stated intent per change.
+gh pr view "$OR_PR" --repo "$OR_REPO" --json commits \
+  --jq '.commits[] | "- \(.oid[0:7]) \(.messageHeadline)"' \
+  > "$SCRATCH/pr-commits.md" 2>/dev/null || true
+[ -s "$SCRATCH/pr-commits.md" ] || echo "(no commits found)" > "$SCRATCH/pr-commits.md"
+
+# Linked issues this PR closes (the requirement). Parse close-keyword refs from
+# the title+body, then fetch each issue's title+body (bounded to 5).
+{
+  gh pr view "$OR_PR" --repo "$OR_REPO" --json title,body --jq '.title, .body' 2>/dev/null \
+    | grep -oiE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed)) +#[0-9]+' \
+    | grep -oE '[0-9]+' | sort -u | head -5 \
+    | while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        gh issue view "$n" --repo "$OR_REPO" --json number,title,body \
+          --jq '"### #\(.number) \(.title)\n\(.body)\n"' 2>/dev/null || true
+      done
+} > "$SCRATCH/linked-issues.md" 2>/dev/null || true
+[ -s "$SCRATCH/linked-issues.md" ] || echo "(no linked issues)" > "$SCRATCH/linked-issues.md"
+
+# Existing discussion: inline review threads (with resolved state) + general
+# comments. Lets the reviewer defer to humans, never repeat an open point, and
+# never re-raise a thread a human already resolved.
+OWNER="${OR_REPO%%/*}"; REPO="${OR_REPO##*/}"
+{
+  echo "## Inline review threads"
+  gh api graphql -f query='
+    query($owner:String!,$repo:String!,$pr:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){
+          reviewThreads(first:100){ nodes{
+            isResolved
+            comments(first:1){ nodes{ author{login} path line body } }
+          } }
+        }
+      }
+    }' -F owner="$OWNER" -F repo="$REPO" -F pr="$OR_PR" \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+          | "[\(if .isResolved then "RESOLVED" else "OPEN" end)] \(.comments.nodes[0].path // "?"):\(.comments.nodes[0].line // "?") — @\(.comments.nodes[0].author.login // "?"): \(.comments.nodes[0].body)"' \
+    2>/dev/null || true
+  echo ""
+  echo "## General comments"
+  gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
+    --jq ".[] | select(.body | contains(\"$MARKER_MATCH\") | not) | \"@\(.user.login): \(.body)\"" \
+    2>/dev/null || true
+} > "$SCRATCH/pr-comments.md" 2>/dev/null || true
+[ -s "$SCRATCH/pr-comments.md" ] || echo "(no discussion yet)" > "$SCRATCH/pr-comments.md"
+
 DIFF_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
 echo "DIFF_LINES=$DIFF_LINES" >> "$SCRATCH/metrics.env"
 info "context: $DIFF_LINES diff lines, $(wc -l < "$SCRATCH/prev-review.md" | tr -d ' ') prev-review lines"

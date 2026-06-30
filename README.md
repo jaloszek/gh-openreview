@@ -87,8 +87,12 @@ Two LLM passes plus a deterministic render:
    🟡 nit; pre-existing issues are never shown), guarantees the marker header,
    posts one summary comment, and prunes stale ones so only the latest remains.
 
-Before the passes run, a token-scoped step gathers the PR context (diff, title/
-body, changed files, prior review comments) into a scratch directory. **The LLM
+Before the passes run, a token-scoped step gathers the PR context into a scratch
+directory: the diff (with generated/vendored files excluded and a size cap), the
+title/body and changed files, the **linked issues** the PR closes (the
+requirement), the branch's **commit messages**, and **existing discussion** —
+inline review threads tagged `[OPEN]`/`[RESOLVED]` plus general comments — so the
+reviewer defers to humans and never repeats or re-raises a point. **The LLM
 passes read only those files — they never receive a GitHub token.**
 
 ## Authentication & models
