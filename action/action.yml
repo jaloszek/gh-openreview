@@ -133,7 +133,12 @@ runs:
         {
           echo "OR_REPO=${{ github.repository }}"
           echo "OR_PR=${{ steps.ctx.outputs.pr }}"
-          echo "OR_MODEL=$MODEL"
+          # Feed the model through OPENREVIEW_MODEL — the engine's resolve_model()
+          # recomputes OR_MODEL from (--model flag > OPENREVIEW_MODEL > OC_MODEL >
+          # default), so setting OR_MODEL directly here was silently overwritten
+          # and the `model` input was ignored (every run fell back to the free
+          # default). OPENREVIEW_MODEL is the precedence key resolve_model honors.
+          echo "OPENREVIEW_MODEL=$MODEL"
           echo "MARKER=$MARKER"
           echo "BOT_LOGIN=$BOT"
           echo "OR_DIR=$GITHUB_WORKSPACE"

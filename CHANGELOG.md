@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## v1.0.2
+
+- Fixed the `model` input being silently ignored. The Action exported the
+  chosen model as `OR_MODEL`, but `resolve_model()` recomputes `OR_MODEL` from
+  `--model > OPENREVIEW_MODEL > OC_MODEL > default` and never read the
+  pre-exported value — so every run fell back to the free default model
+  regardless of the `model` input. The Action now feeds it through
+  `OPENREVIEW_MODEL`, and `resolve_model()` additionally honors a pre-exported
+  `OR_MODEL` as a last fallback (defensive against the same class of bug).
+
 ## v1.0.1
 
 - Open-source polish: rewritten README, added LICENSE (MIT), SECURITY.md, CONTRIBUTING.md.

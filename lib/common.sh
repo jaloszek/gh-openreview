@@ -57,9 +57,12 @@ parse_common_flags() {
 }
 
 # --- model resolution --------------------------------------------------------
-# Precedence: --model flag > OPENREVIEW_MODEL > OC_MODEL > bundled free model.
+# Precedence: --model flag > OPENREVIEW_MODEL > OC_MODEL > a pre-exported
+# OR_MODEL > bundled free model. The pre-exported OR_MODEL fallback is
+# defensive: a caller that sets OR_MODEL directly (as the GitHub Action used to)
+# is honored instead of being silently overwritten with the free default.
 resolve_model() {
-  OR_MODEL="${OR_MODEL_FLAG:-${OPENREVIEW_MODEL:-${OC_MODEL:-opencode/deepseek-v4-flash-free}}}"
+  OR_MODEL="${OR_MODEL_FLAG:-${OPENREVIEW_MODEL:-${OC_MODEL:-${OR_MODEL:-opencode/deepseek-v4-flash-free}}}}"
   export OR_MODEL
 }
 
