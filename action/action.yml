@@ -1,5 +1,5 @@
 name: "OpenCode PR Review"
-description: "Free-first, provider-agnostic PR reviewer on the OpenCode harness (the CI side of the gh-openreview toolkit)."
+description: "Free-first, provider-agnostic LLM pull-request reviewer on the OpenCode harness."
 author: "jaloszek"
 branding:
   icon: "git-pull-request"
@@ -15,9 +15,21 @@ inputs:
     required: false
     default: ""
   model:
-    description: "opencode model id."
+    description: "opencode model id for the analysis (generate) pass."
     required: false
     default: "opencode/deepseek-v4-flash-free"
+  verify-model:
+    description: "opencode model id for the (cheaper) verification pass. Defaults to `model` when empty."
+    required: false
+    default: ""
+  diff-exclude:
+    description: "Extended-regex matched against each changed file's path; matching files are dropped from the reviewed diff. Empty uses the built-in defaults (lockfiles, generated, vendored, minified); set to `none` to review every file."
+    required: false
+    default: ""
+  diff-max-lines:
+    description: "Truncate the reviewed diff to this many lines (caps prompt cost on huge PRs). 0 disables truncation."
+    required: false
+    default: "4000"
   github-token:
     description: "Token used to fetch context and post the comment."
     required: false
@@ -31,13 +43,30 @@ inputs:
     required: false
     default: "opencode-review"
   marker-header:
-    description: "Identity/dedup header (first line of the posted comment). Keep the text 'OpenCode Review' for reliable dedup."
+    description: "Identity/dedup header (first line of the posted comment). The dedup token is derived from this automatically, so any custom header works."
     required: false
     default: "## 🤖 OpenCode Review"
   bot-login:
     description: "Comment author whose stale reviews are pruned."
     required: false
     default: "github-actions[bot]"
+
+outputs:
+  findings-total:
+    description: "Total findings rendered (important + nits)."
+    value: ${{ steps.metrics.outputs.findings-total }}
+  findings-important:
+    description: "Number of 🔴 important findings."
+    value: ${{ steps.metrics.outputs.findings-important }}
+  findings-nit:
+    description: "Number of 🟡 nit findings."
+    value: ${{ steps.metrics.outputs.findings-nit }}
+  diff-lines:
+    description: "Reviewed diff size in lines (after exclude/truncation)."
+    value: ${{ steps.metrics.outputs.diff-lines }}
+  duration-seconds:
+    description: "Total LLM time across the passes, in seconds."
+    value: ${{ steps.metrics.outputs.duration-seconds }}
 
 runs:
   using: "composite"
@@ -127,6 +156,9 @@ runs:
       shell: bash
       env:
         MODEL: ${{ inputs.model }}
+        VERIFY_MODEL: ${{ inputs.verify-model }}
+        DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
+        DIFF_MAX_LINES: ${{ inputs.diff-max-lines }}
         MARKER: ${{ inputs.marker-header }}
         BOT: ${{ inputs.bot-login }}
       run: |
@@ -139,7 +171,20 @@ runs:
           # and the `model` input was ignored (every run fell back to the free
           # default). OPENREVIEW_MODEL is the precedence key resolve_model honors.
           echo "OPENREVIEW_MODEL=$MODEL"
+          # Verify pass runs on a (typically cheaper) tier; empty -> main model.
+          [ -n "$VERIFY_MODEL" ] && echo "OPENREVIEW_VERIFY_MODEL=$VERIFY_MODEL"
+          # Diff excludes: empty -> engine built-in defaults; `none` -> disable.
+          case "$DIFF_EXCLUDE" in
+            "") : ;;
+            [Nn][Oo][Nn][Ee]) echo "OPENREVIEW_DIFF_EXCLUDE=" ;;
+            *) echo "OPENREVIEW_DIFF_EXCLUDE=$DIFF_EXCLUDE" ;;
+          esac
+          echo "OPENREVIEW_DIFF_MAX_LINES=$DIFF_MAX_LINES"
           echo "MARKER=$MARKER"
+          # Dedup token: the marker text with leading '#'/spaces stripped, so a
+          # custom marker-header works without manually keeping a magic substring.
+          MARKER_MATCH=$(printf '%s' "$MARKER" | sed -E 's/^#+[[:space:]]*//')
+          echo "MARKER_MATCH=$MARKER_MATCH"
           echo "BOT_LOGIN=$BOT"
           echo "OR_DIR=$GITHUB_WORKSPACE"
           echo "SCRATCH_REL=.openreview-tmp"
@@ -156,16 +201,31 @@ runs:
       run: ${{ github.action_path }}/../lib/gather.sh
 
     - name: Review passes (no GitHub token)
+      id: passes
       if: steps.ctx.outputs.should_run == 'true'
-      continue-on-error: true
       shell: bash
       env:
         OPENCODE_API_KEY: ${{ inputs.opencode-api-key }}
         OPENCODE_CONFIG: ${{ inputs.opencode-config }}
       run: ${{ github.action_path }}/../lib/passes.sh
 
+    # Deterministic render — no model call, no token. Builds the final comment
+    # from the verified findings. Runs only when the passes succeeded, so an
+    # engine failure never produces a misleading "no issues" comment.
+    - name: Render review comment
+      id: render
+      if: steps.ctx.outputs.should_run == 'true' && steps.passes.outcome == 'success'
+      shell: bash
+      run: ${{ github.action_path }}/../lib/render.sh
+
+    - name: Run metrics
+      id: metrics
+      if: steps.ctx.outputs.should_run == 'true' && steps.render.outcome == 'success'
+      shell: bash
+      run: ${{ github.action_path }}/../lib/metrics.sh
+
     - name: Post review comment
-      if: steps.ctx.outputs.should_run == 'true'
+      if: steps.ctx.outputs.should_run == 'true' && steps.render.outcome == 'success'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}

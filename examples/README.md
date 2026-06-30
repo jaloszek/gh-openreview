@@ -12,6 +12,3 @@ Caller workflows for the `gh-openreview` CI action. Copy one into your repo at
 Before enabling the comment/label triggers on a **public** repository, read
 [../SECURITY.md](../SECURITY.md) — it explains how the action keeps your provider
 key away from untrusted fork PRs and what the gating does.
-
-For local, no-CI usage (`gh openreview review|resolve|inbox|assist`), see the
-[top-level README](../README.md).

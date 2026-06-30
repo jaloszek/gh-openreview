@@ -8,11 +8,12 @@ set -euo pipefail
 
 : "${OR_REPO:?}"; : "${OR_PR:?}"; : "${SCRATCH:?}"
 MARKER="${MARKER:-## 🤖 OpenCode Review}"
-MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
+export MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
 REVIEW_FILE="$SCRATCH/opencode-review.md"
 
 # Identity whose old comments we prune: explicit BOT_LOGIN (CI) or the auth'd user.
-AUTHOR_LOGIN="${BOT_LOGIN:-$(gh api user --jq .login 2>/dev/null || echo '')}"
+# Exported so jq reads it via env.AUTHOR_LOGIN (no string interpolation).
+export AUTHOR_LOGIN="${BOT_LOGIN:-$(gh api user --jq .login 2>/dev/null || echo '')}"
 
 # Fall back to a minimal comment and guarantee the marker header is line 1.
 if [ ! -s "$REVIEW_FILE" ]; then
@@ -32,7 +33,7 @@ if [ -n "$AUTHOR_LOGIN" ]; then
   IDS=()
   while IFS= read -r _id; do [ -n "$_id" ] && IDS+=("$_id"); done < <(
     gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
-      --jq ".[] | select(.user.login == \"$AUTHOR_LOGIN\") | select(.body | contains(\"$MARKER_MATCH\")) | .id")
+      --jq '.[] | select(.user.login == env.AUTHOR_LOGIN) | select(.body | contains(env.MARKER_MATCH)) | .id')
   delete_count=$(( ${#IDS[@]} - 1 ))
   if [ "$delete_count" -gt 0 ]; then
     for ((i = 0; i < delete_count; i++)); do
