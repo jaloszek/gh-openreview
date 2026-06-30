@@ -40,7 +40,8 @@ awk -v prdesc="$PRDESC" '
       # severity rank then confidence rank -> stable, deterministic ordering
       sk = (sev=="important"?0:1) (conf=="high"?0:(conf=="med"?1:2))
       gsub(/\t/, " ", title); gsub(/\t/, " ", body)
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n", sk, sev, loc, conf, title, body
+      # NR is the input-order tie-breaker so same sev+conf findings sort stably.
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", sk, sev, loc, conf, title, body, NR
     }
     have=0; sev=""; loc=""; conf=""; title=""; body=""
   }
@@ -56,7 +57,7 @@ awk -v prdesc="$PRDESC" '
     else if ($0 ~ /^body:/)  { sub(/^body:[[:space:]]*/,"");  body=$0 }
   }
   END { flush() }
-' "$IN" | LC_ALL=C sort -t$'\t' -k1,1 > "$TSV"
+' "$IN" | LC_ALL=C sort -t$'\t' -k1,1 -k7,7n > "$TSV"
 [ -f "$PRDESC" ] || : > "$PRDESC"
 
 # 2) Tallies.

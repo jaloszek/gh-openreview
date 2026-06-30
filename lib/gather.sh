@@ -19,6 +19,8 @@ MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
 DEFAULT_EXCLUDE='(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|composer\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock)$|\.min\.(js|css)$|\.(snap|map)$|(^|/)(dist|build|vendor|node_modules|\.openreview-tmp)/|\.pb\.go$|_pb2\.py$|(^|/)generated/|\.generated\.'
 DIFF_EXCLUDE="${OPENREVIEW_DIFF_EXCLUDE-$DEFAULT_EXCLUDE}"
 DIFF_MAX_LINES="${OPENREVIEW_DIFF_MAX_LINES:-4000}"
+# Guard against a non-numeric input crashing the `-gt` test under set -e.
+case "$DIFF_MAX_LINES" in ""|*[!0-9]*) DIFF_MAX_LINES=4000 ;; esac
 
 gh pr view "$OR_PR" --repo "$OR_REPO" --json title,body,files > "$SCRATCH/pr-meta.json"
 

@@ -67,10 +67,12 @@ oc_run() {
   fi
   local attempt rc
   for attempt in 1 2; do
-    if ( cd "$dir" && timeout "$to" opencode run -m "$model" "$prompt" ) 1>&2; then
-      return 0
-    fi
-    rc=$?
+    # Capture the real exit status: `|| rc=$?` both suppresses set -e and grabs
+    # the failure code. (A bare `if (cmd); then…; fi` leaves $?=0 on a false
+    # condition, so reading $? after the block would always see success.)
+    rc=0
+    ( cd "$dir" && timeout "$to" opencode run -m "$model" "$prompt" ) 1>&2 || rc=$?
+    [ "$rc" -eq 0 ] && return 0
     if [ "$rc" -eq 124 ]; then
       warn "opencode timed out after ${to}s (attempt $attempt/2)"
     else

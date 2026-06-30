@@ -209,18 +209,19 @@ runs:
     # from the verified findings. Runs only when the passes succeeded, so an
     # engine failure never produces a misleading "no issues" comment.
     - name: Render review comment
+      id: render
       if: steps.ctx.outputs.should_run == 'true' && steps.passes.outcome == 'success'
       shell: bash
       run: ${{ github.action_path }}/../lib/render.sh
 
     - name: Run metrics
       id: metrics
-      if: steps.ctx.outputs.should_run == 'true' && steps.passes.outcome == 'success'
+      if: steps.ctx.outputs.should_run == 'true' && steps.render.outcome == 'success'
       shell: bash
       run: ${{ github.action_path }}/../lib/metrics.sh
 
     - name: Post review comment
-      if: steps.ctx.outputs.should_run == 'true' && steps.passes.outcome == 'success'
+      if: steps.ctx.outputs.should_run == 'true' && steps.render.outcome == 'success'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
