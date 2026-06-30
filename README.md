@@ -63,6 +63,18 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `marker-header` | `## 🤖 OpenCode Review` | First line of the posted comment; used for dedup. |
 | `bot-login` | `github-actions[bot]` | Comment author whose stale reviews are pruned. |
 
+## Outputs
+
+The action exposes per-run metrics (also written to the job's step summary):
+
+| Output | Meaning |
+|---|---|
+| `findings-total` | Rendered findings (important + nits). |
+| `findings-important` | 🔴 important findings. |
+| `findings-nit` | 🟡 nit findings. |
+| `diff-lines` | Reviewed diff size after exclude/truncation. |
+| `duration-seconds` | Total LLM time across the passes. |
+
 ## How the review works
 
 Two LLM passes plus a deterministic render:

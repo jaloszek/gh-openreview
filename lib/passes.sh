@@ -13,6 +13,15 @@ resolve_verify_model
 prepare_opencode_config "$OR_DIR"
 S="$SCRATCH_REL"   # scratch path as the model sees it (relative to OR_DIR)
 
+# Telemetry accumulator (read by metrics.sh -> step summary + action outputs).
+# gather.sh created it (DIFF_LINES); append so we don't clobber that.
+METRICS="$SCRATCH/metrics.env"
+{
+  echo "OR_MODEL=$OR_MODEL"
+  echo "OR_VERIFY_MODEL=$OR_VERIFY_MODEL"
+  echo "PASS2_SECS=0"
+} >> "$METRICS"
+
 # The exact output contract shared by both passes and parsed by render.sh.
 FORMAT_SPEC="Write findings in this EXACT record format and nothing else outside it. One record per finding:
 @@FINDING
@@ -30,6 +39,7 @@ GENERATE_FAILED=0
 
 # --- PASS 1: GENERATE --------------------------------------------------------
 info "pass 1/2 — generate (model: $OR_MODEL)"
+_t0=$SECONDS
 oc_run "$OR_DIR" "$OR_MODEL" "You are a senior engineer reviewing a GitHub pull request. Find real problems INTRODUCED by this PR.
 
 IMPORTANT: your read and write tools are sandboxed to the project directory. ALL scratch files must use relative paths under $S/ (e.g. $S/pr.diff) — NEVER /tmp or any absolute path, those are rejected.
@@ -58,6 +68,7 @@ $FORMAT_SPEC
 
 Write the records to $S/review-candidates.md with your write tool. Do not post anything. Do not edit or commit tracked files." \
   || { GENERATE_FAILED=1; warn "pass 1 (generate) failed"; }
+echo "PASS1_SECS=$((SECONDS - _t0))" >> "$METRICS"
 
 # --- GATE: any candidate findings? -------------------------------------------
 if grep -qE '^@@FINDING[[:space:]]*$' "$SCRATCH/review-candidates.md" 2>/dev/null; then
@@ -72,6 +83,7 @@ fi
 # --- PASS 2: VERIFY (only when there are candidates) -------------------------
 if [ "$HAS_CANDIDATES" = "1" ]; then
   info "pass 2/2 — verify (model: $OR_VERIFY_MODEL)"
+  _t1=$SECONDS
   oc_run "$OR_DIR" "$OR_VERIFY_MODEL" "Verification pass. Do NOT look for new issues — that only adds noise.
 
 IMPORTANT: your read/write tools are sandboxed to the project directory — use relative paths only, never /tmp.
@@ -92,6 +104,7 @@ Write the survivors to $S/review-verified.md with your write tool, preserving th
   if [ ! -s "$SCRATCH/review-verified.md" ]; then
     cp "$SCRATCH/review-candidates.md" "$SCRATCH/review-verified.md" 2>/dev/null || true
   fi
+  echo "PASS2_SECS=$((SECONDS - _t1))" >> "$METRICS"
 else
   info "pass 2/2 — skipped (no candidates)"
 fi

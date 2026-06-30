@@ -65,4 +65,6 @@ gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
   > "$SCRATCH/prev-review.md" 2>/dev/null || true
 [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
 
-info "context: $(wc -l < "$SCRATCH/pr.diff" | tr -d ' ') diff lines, $(wc -l < "$SCRATCH/prev-review.md" | tr -d ' ') prev-review lines"
+DIFF_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
+echo "DIFF_LINES=$DIFF_LINES" >> "$SCRATCH/metrics.env"
+info "context: $DIFF_LINES diff lines, $(wc -l < "$SCRATCH/prev-review.md" | tr -d ' ') prev-review lines"

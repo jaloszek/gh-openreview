@@ -125,9 +125,9 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
 
 ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits)"
 
-# Export counts for telemetry/outputs (consumed by the action step).
+# Record finding counts for telemetry (metrics.sh -> step summary + outputs).
 {
   echo "OR_FINDINGS_IMPORTANT=$n_important"
   echo "OR_FINDINGS_NIT=$n_nit"
   echo "OR_FINDINGS_TOTAL=$n_total"
-} >> "${GITHUB_ENV:-/dev/null}" 2>/dev/null || true
+} >> "$SCRATCH/metrics.env" 2>/dev/null || true
