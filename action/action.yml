@@ -22,6 +22,14 @@ inputs:
     description: "opencode model id for the (cheaper) verification pass. Defaults to `model` when empty."
     required: false
     default: ""
+  diff-exclude:
+    description: "Extended-regex matched against each changed file's path; matching files are dropped from the reviewed diff. Empty uses the built-in defaults (lockfiles, generated, vendored, minified); set to `none` to review every file."
+    required: false
+    default: ""
+  diff-max-lines:
+    description: "Truncate the reviewed diff to this many lines (caps prompt cost on huge PRs). 0 disables truncation."
+    required: false
+    default: "4000"
   github-token:
     description: "Token used to fetch context and post the comment."
     required: false
@@ -132,6 +140,8 @@ runs:
       env:
         MODEL: ${{ inputs.model }}
         VERIFY_MODEL: ${{ inputs.verify-model }}
+        DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
+        DIFF_MAX_LINES: ${{ inputs.diff-max-lines }}
         MARKER: ${{ inputs.marker-header }}
         BOT: ${{ inputs.bot-login }}
       run: |
@@ -146,6 +156,13 @@ runs:
           echo "OPENREVIEW_MODEL=$MODEL"
           # Verify pass runs on a (typically cheaper) tier; empty -> main model.
           [ -n "$VERIFY_MODEL" ] && echo "OPENREVIEW_VERIFY_MODEL=$VERIFY_MODEL"
+          # Diff excludes: empty -> engine built-in defaults; `none` -> disable.
+          case "$DIFF_EXCLUDE" in
+            "") : ;;
+            none) echo "OPENREVIEW_DIFF_EXCLUDE=" ;;
+            *) echo "OPENREVIEW_DIFF_EXCLUDE=$DIFF_EXCLUDE" ;;
+          esac
+          echo "OPENREVIEW_DIFF_MAX_LINES=$DIFF_MAX_LINES"
           echo "MARKER=$MARKER"
           echo "BOT_LOGIN=$BOT"
           echo "OR_DIR=$GITHUB_WORKSPACE"
