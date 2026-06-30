@@ -32,10 +32,19 @@ resolve_model() {
   export OR_MODEL
 }
 
-# Verify-pass model: cheaper tier for the verification pass. Falls back to the
-# main model, then to the bundled free model if neither is set.
+# Cheap tier: a small/fast/free model the engine routes non-analysis prep work
+# to (intent compression, verification) so the strong model only does the core
+# review. Empty (the default) disables cheap routing entirely.
+resolve_cheap_model() {
+  OR_CHEAP_MODEL="${OPENREVIEW_CHEAP_MODEL:-}"
+  export OR_CHEAP_MODEL
+}
+
+# Verify-pass model. Precedence: an explicit verify-model > the cheap tier >
+# the main model > the bundled free model. So setting cheap-model alone moves
+# verification onto the cheap tier automatically.
 resolve_verify_model() {
-  OR_VERIFY_MODEL="${OPENREVIEW_VERIFY_MODEL:-${OR_MODEL:-}}"
+  OR_VERIFY_MODEL="${OPENREVIEW_VERIFY_MODEL:-${OR_CHEAP_MODEL:-${OR_MODEL:-}}}"
   [ -n "$OR_VERIFY_MODEL" ] || OR_VERIFY_MODEL="opencode/deepseek-v4-flash-free"
   export OR_VERIFY_MODEL
 }
@@ -70,8 +79,14 @@ oc_run() {
     # Capture the real exit status: `|| rc=$?` both suppresses set -e and grabs
     # the failure code. (A bare `if (cmd); then…; fi` leaves $?=0 on a false
     # condition, so reading $? after the block would always see success.)
+    # `timeout` is optional — absent on stock macOS and some runner images; run
+    # without it there rather than failing every pass.
     rc=0
-    ( cd "$dir" && timeout "$to" opencode run -m "$model" "$prompt" ) 1>&2 || rc=$?
+    if command -v timeout >/dev/null 2>&1; then
+      ( cd "$dir" && timeout "$to" opencode run -m "$model" "$prompt" ) 1>&2 || rc=$?
+    else
+      ( cd "$dir" && opencode run -m "$model" "$prompt" ) 1>&2 || rc=$?
+    fi
     [ "$rc" -eq 0 ] && return 0
     if [ "$rc" -eq 124 ]; then
       warn "opencode timed out after ${to}s (attempt $attempt/2)"

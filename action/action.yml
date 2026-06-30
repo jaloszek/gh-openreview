@@ -18,8 +18,12 @@ inputs:
     description: "opencode model id for the analysis (generate) pass."
     required: false
     default: "opencode/deepseek-v4-flash-free"
+  cheap-model:
+    description: "Small/fast/free opencode model the engine routes prep work to (intent compression; also the default verify tier). Empty disables cheap routing — everything runs on `model`."
+    required: false
+    default: ""
   verify-model:
-    description: "opencode model id for the (cheaper) verification pass. Defaults to `model` when empty."
+    description: "opencode model id for the verification pass. Empty falls back to `cheap-model`, then `model`."
     required: false
     default: ""
   diff-exclude:
@@ -156,6 +160,7 @@ runs:
       shell: bash
       env:
         MODEL: ${{ inputs.model }}
+        CHEAP_MODEL: ${{ inputs.cheap-model }}
         VERIFY_MODEL: ${{ inputs.verify-model }}
         DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
         DIFF_MAX_LINES: ${{ inputs.diff-max-lines }}
@@ -171,7 +176,9 @@ runs:
           # and the `model` input was ignored (every run fell back to the free
           # default). OPENREVIEW_MODEL is the precedence key resolve_model honors.
           echo "OPENREVIEW_MODEL=$MODEL"
-          # Verify pass runs on a (typically cheaper) tier; empty -> main model.
+          # Cheap tier for prep work (intent compression) + default verify model.
+          [ -n "$CHEAP_MODEL" ] && echo "OPENREVIEW_CHEAP_MODEL=$CHEAP_MODEL"
+          # Verify model override; empty -> cheap-model, then main model.
           [ -n "$VERIFY_MODEL" ] && echo "OPENREVIEW_VERIFY_MODEL=$VERIFY_MODEL"
           # Diff excludes: empty -> engine built-in defaults; `none` -> disable.
           case "$DIFF_EXCLUDE" in
