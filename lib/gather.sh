@@ -389,6 +389,37 @@ if [ -s "$SCRATCH/open-prs.md" ]; then
   info "open-PR overlap: $(($(wc -l < "$SCRATCH/open-prs.md" | tr -d ' ') - 1)) overlapping PR(s)"
 fi
 
+# Regression radar (TASK-31): for the PR's changed files, recent bug-fix commit
+# history — surfaced so the reviewer can check this PR doesn't undo or bypass
+# a recent fix. Requires full history; degrades silently on a shallow clone
+# (partial `git log --since` results on a shallow repo would be misleading).
+rm -f "$SCRATCH/regression-context.md"
+if [ "$(git -C "$OR_DIR" rev-parse --is-shallow-repository 2>/dev/null || echo true)" = "false" ]; then
+  CHANGED_FILES=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json files --jq '.files[].path' 2>/dev/null | head -20 || true)
+  if [ -n "$CHANGED_FILES" ]; then
+    : > "$SCRATCH/.regression-raw.tsv"
+    printf '%s\n' "$CHANGED_FILES" | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      git -C "$OR_DIR" log --since='120 days ago' -i -E --grep='fix|bug|regress' --format='%h %s' -n 3 -- "$f" 2>/dev/null \
+        | while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            printf '%s\t%s\n' "$f" "$line" >> "$SCRATCH/.regression-raw.tsv"
+          done
+    done
+    if [ -s "$SCRATCH/.regression-raw.tsv" ]; then
+      {
+        echo "## Files touched by this PR with recent bug-fix commits (last 120 days)"
+        awk -F'\t' '!seen[$2]++ { print $1 " — " $2 }' "$SCRATCH/.regression-raw.tsv"
+      } > "$SCRATCH/regression-context.md"
+    fi
+    rm -f "$SCRATCH/.regression-raw.tsv"
+  fi
+fi
+if [ -s "$SCRATCH/regression-context.md" ]; then
+  sanitize_text "$SCRATCH/regression-context.md"
+  info "regression radar: $(($(wc -l < "$SCRATCH/regression-context.md" | tr -d ' ') - 1)) recently-fixed file(s) touched"
+fi
+
 # Strip invisible-Unicode smuggling vectors from every fetched text context
 # file before the model sees it (pr-meta.json values are left alone).
 sanitize_text "$SCRATCH/pr.diff"

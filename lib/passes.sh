@@ -90,6 +90,13 @@ if [ -s "$SCRATCH/open-prs.md" ]; then
   OPEN_PRS_CONTEXT="- $S/open-prs.md — other OPEN PRs touch the same files — consider conflicting or duplicated work, and whether this PR depends on or races them. Mention only when concretely relevant."
 fi
 
+# Regression radar (TASK-31): recent bug-fix history on this PR's changed
+# files, when gather.sh found any.
+REGRESSION_CONTEXT=""
+if [ -s "$SCRATCH/regression-context.md" ]; then
+  REGRESSION_CONTEXT="- $S/regression-context.md — these files were recently bug-fixed. Verify this PR does not undo or bypass those fixes — regressions of recent fixes are the most important finding class."
+fi
+
 GENERATE_FAILED=0
 
 # --- PASS 1: GENERATE --------------------------------------------------------
@@ -105,6 +112,7 @@ Read the context with your read tool:
 $INTENT_CONTEXT
 $INCREMENTAL_CONTEXT
 $OPEN_PRS_CONTEXT
+$REGRESSION_CONTEXT
 - $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
 - $S/prev-review.md — your previous review of an EARLIER version of this PR (may say '(no previous review)').
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.
