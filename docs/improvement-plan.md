@@ -1,368 +1,438 @@
 # gh-openreview — Improvement Plan
 
-Status: **draft** · Branch: `refactor/action-only-reviewer` · Author: pawel
+Status: **living document** · Author: pawel · Last major revision: 2026-07-03
+(field-research pass — per-project findings live in [`competitors.md`](competitors.md))
 
-This plan has three parts:
+## Direction
 
-1. **Refactor** — collapse the repo to a single thing: a GitHub Action OpenCode PR
-   reviewer. Drop the local `gh` extension surface (`review`/`resolve`/`inbox`/
-   `assist`/`doctor`).
-2. **Improvements** — the findings from the two `ai-news` runs
-   ([28447132192](https://github.com/jaloszek/ai-news/actions/runs/28447132192),
-   [28446552220](https://github.com/jaloszek/ai-news/actions/runs/28446552220)),
-   plus additional proposals.
-3. **Competitive research** — how leading automated reviewers are built, and what
-   to borrow. *(filled in from the deep-research pass — see bottom.)*
+The product stays what it is: an **OpenCode-agentic, plain-bash GitHub Action**
+— no server, no database, no build step. The strategy is to absorb the best
+ideas from the field (see `competitors.md`) while skipping as much
+infrastructure as possible. Three principles:
 
----
-
-## Part 0 — Evidence from the two runs
-
-Same PR (`ai-news#125`), two `synchronize` events 9 minutes apart.
-
-| | Run `28446552220` | Run `28447132192` |
-|---|---|---|
-| Total | **6m55s** | **2m28s** |
-| Pass 1 generate | ~2m24s → 1 nit | ~1m55s → `NO_FINDINGS` |
-| Pass 2 verify | ~1m25s | skipped |
-| Pass 3 format | **~2m50s** | ~17s |
-| Outcome | posted the nit | posted "No blocking issues" |
-
-Three hard facts:
-
-- **Zero cost/telemetry.** No token counts, no cost, no per-pass timing in the logs.
-- **Pass 3 (format) is the slowest pass** — 2m50s of LLM time to template one nit
-  into markdown. Pure waste; formatting is deterministic.
-- **2.8× runtime variance on the same PR**, and every push fires a full 3-pass
-  review (cost scales linearly with push count).
+1. **Agentic over pre-built context.** The model reads files in a full checkout
+   instead of us building a RAG/graph index. This is the consensus winner
+   ("repo context beats diff-only") at zero infra cost. We deliberately do NOT
+   copy full-codebase indexing (Greptile/Kodus) — the heavyweight answer to a
+   problem the agentic checkout already mostly solves.
+2. **Deterministic for hard constraints, LLM for judgment** (Alibaba
+   open-code-review's phrasing, and already our design: deterministic render,
+   structured records, marker dedup). Anything that can be awk stays awk.
+3. **Learning over time is the long-term moat.** The strongest empirical result
+   in the field (Greptile) is that noise is fixed by *feedback memory*, not by
+   prompting. We need a place to store per-repo state without infra — Part 3
+   solves this (state-in-comment + a dedicated memory repo + a webhook-less
+   GitHub App identity).
 
 ---
 
-## Part 1 — Refactor: action-only
+## Part 0 — Shipped (history)
 
-### 1.1 Goal
-
-The repo becomes exactly one product: **a reusable GitHub Action that reviews a
-PR with OpenCode**. No `gh` extension, no interactive local subcommands. The
-review engine and the PR-context gathering become clean, separately-testable
-scripts that the action wires together.
-
-### 1.2 Current surface (what exists today)
-
-| File | Role | Keep? |
-|---|---|---|
-| `gh-openreview` (entrypoint) | `gh` extension dispatcher | **delete** |
-| `lib/review.sh` | local `review` subcommand | **delete** (action replaces it) |
-| `lib/resolve.sh` | reconcile your PR's threads | **delete** (separate concern) |
-| `lib/inbox.sh` | list PRs awaiting review | **delete** (separate concern) |
-| `lib/assist.sh` | human-voice inline review | **delete** (separate concern) |
-| `lib/doctor.sh` | env check | **delete** (CI doesn't need it) |
-| `lib/common.sh` | shared helpers | **slim** — drop `parse_common_flags`, `resolve_pr_target`, `confirm`, local scratch trap; keep logging, `oc_run`, `resolve_model`, config resolution |
-| `lib/gather.sh` | pre-fetch PR context | **keep + expand** (see 2.x) |
-| `lib/passes.sh` | 3-pass engine | **keep + rework** (see 2.x) |
-| `lib/post.sh` | deterministic comment post | **keep + expand** (inline comments) |
-| `lib/resolve.sh`/`inbox`/`assist`/`doctor` references in README/CHANGELOG/examples | docs | **rewrite** |
-| `action/action.yml` | the Action | **keep — becomes the only entrypoint** |
-
-> The deleted local commands (`resolve`/`assist`/`inbox`) are a genuinely
-> separate product (a human's review assistant). If still wanted, they belong in
-> their own repo/extension. They are **out of scope** here.
-
-### 1.3 Target layout
-
-```
-action/action.yml          # the only entrypoint
-lib/
-  common.sh                # logging, oc_run, model + config resolution (slimmed)
-  gather.sh                # collect ALL PR context (diff, meta, comments, threads, issues)
-  passes.sh                # generate -> verify (LLM); format is now deterministic
-  render.sh                # NEW: deterministic markdown renderer (replaces format pass)
-  post.sh                  # post summary + inline comments, dedup, metrics
-  metrics.sh               # NEW: token/cost/timing capture -> step summary + outputs
-opencode.json              # bundled free-model config
-README.md                  # action-only docs
-examples/                  # action usage examples (keep)
-docs/improvement-plan.md   # this file
-```
-
-### 1.4 Refactor steps
-
-1. Delete `gh-openreview`, `lib/review.sh`, `lib/resolve.sh`, `lib/inbox.sh`,
-   `lib/assist.sh`, `lib/doctor.sh`.
-2. Slim `lib/common.sh` to what the action path uses.
-3. Rewrite `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `examples/` to be
-   action-only (remove the "gh extension" framing and the command table).
-4. Keep the security model intact (token-scoped steps; the LLM pass never sees a
-   GitHub token — see `SECURITY.md`).
-
----
-
-## Part 2 — Improvements
-
-Ordered by ROI / obviousness. Each has a goal tag:
-💸 cost · 🔮 predictability · 🛡️ robustness · 🎯 quality · 📊 observability.
-
-### A. Deterministic formatting — replace pass 3 with `render.sh` 💸🔮🎯
-**The single highest-value change.** Pass 2 already emits a structured block
-format (`SEVERITY | file:line | confidence` + title + reason). Rendering it to
-the final comment is pure templating — do it in bash/awk, not an LLM call.
-
-- Make pass 2 emit a strict, parseable format (or JSON) instead of prose.
-- `render.sh` reads it and emits the final markdown (marker header, tally,
-  table, collapsible details, capped nits, PR-description suggestion).
-- **Removes ~⅓ of every run's tokens, the slowest pass, and the
-  "model ignored the template" failure mode.** Output shape becomes 100%
-  deterministic.
-
-### B. Per-pass timeout + retry 🛡️
-`oc_run` has no timeout — a hung model burns the full 30-min job budget. Wrap
-each `opencode run` in `timeout <N>` and retry once on non-zero/empty output.
-(Ironic: the PR under review *added* a `timeout 150` preflight; the reviewer
-itself lacks one.)
-
-### C. Don't post on hard failure 🛡️
-`continue-on-error: true` + `warn "pass N returned non-zero"` currently swallows
-failures, so a failed pass 1 can still post an empty/garbage comment. Distinguish
-"clean / no findings" from "engine failed"; on failure, skip posting (or post an
-explicit "review failed, will retry" note) and surface a non-success status.
-
-### D. Cost / token / timing telemetry 📊🔮
-Capture, per pass: wall-clock, tokens in/out, cost (opencode can print usage).
-Emit to:
-- `$GITHUB_STEP_SUMMARY` (a table the maintainer sees on every run),
-- `::notice::` lines,
-- **action `outputs`** (`findings-count`, `important-count`, `tokens`, `cost`,
-  `duration`) so callers can gate/alert.
-
-You can't make cost "predictable" without measuring it first — this unblocks
-every other cost lever.
-
-### E. Model tiering 💸
-Pass 1 (hunting) needs the strong model; pass 2 (verify) can run on the cheap/
-free model; pass 3 (format) needs none (see A). Add `model` (strong) and
-`verify-model` (cheap, defaults to the free model) inputs.
-
-### F. Diff capping & path filtering 💸🔮
-`gather.sh` runs `gh pr diff` unbounded — lockfiles / generated / vendored blobs
-silently inflate pass-1 input. Add:
-- pathspec excludes (`*.lock`, `*.min.*`, `dist/`, `vendor/`, `*.snap`,
-  generated/`pb.go`, etc.), configurable via input,
-- a max line/byte budget with truncation + a `::notice::` (and a step-summary
-  note) so truncation is never silent.
-
-### G. Incremental review on `synchronize` 💸🔮
-Avoid re-reviewing the whole PR on every push. Options (pick per cost target):
-- **Incremental diff** since the last reviewed commit (store last-reviewed SHA in
-  the marker comment as an HTML comment; diff `LAST..HEAD`), feeding the prior
-  full review as context.
-- **Skip when unchanged**: if HEAD's diff == the diff at last review, skip.
-- **Debounce**: drop `synchronize` from the default trigger set and rely on
-  `ready_for_review` + label + `@openreview`; document the trade-off.
-
-### H. Reviewer reads changed files, not just diff hunks 🎯
-`OR_DIR` is the repo root and the tools are sandboxed there, but the prompt only
-points the model at `pr.diff`. Diff-only review is the #1 false-positive source
-(no surrounding context). Instruct the model to open changed files when unsure.
-Synergy with F: you can trim the diff harder once the model can read full files.
-
-### I. Richer PR context in `gather.sh` (the "important input" the user asked for) 🎯
-Today gather collects: `pr.diff`, `pr-meta.json` (title/body/files), and the last
-matching bot review. Expand to a real context bundle:
-- **All prior review comments & review threads** (humans + bots), with
-  resolved/unresolved state and the line they anchor to → so the reviewer
-  defers to humans, never repeats a raised point, and silences fixed ones.
-- **Linked issues** referenced in the PR body/title (`Closes #N`) → intent.
-- **Commit messages** on the branch → author's stated intent per change.
-- **CI / check status** → don't re-report what a linter already flagged.
-- **Existing review verdicts** (approved/changes-requested) → tone/scope.
-
-This is a standalone, token-free script (uses the scoped `GH_TOKEN`), and its
-output is a first-class input to pass 1.
-
-### J. Inline review comments anchored to diff lines 🎯
-Today everything is one summary comment. Leading tools post findings as inline
-review comments on the exact changed line (GitHub Reviews API: `line`/`side`/
-`start_line`). Add an opt-in `comment-style: inline|summary|both`:
-- inline comments for 🔴 Important findings (anchored, threaded, resolvable),
-- a summary comment for the tally + nits + PR-description suggestion,
-- dedup against prior bot inline comments (don't repeat across runs).
-
-### K. Confidence gating & severity calibration 🎯🔮
-Pass 1 already tags confidence (high/med/low). Make it actionable:
-- drop `low`-confidence findings unless `--strict`,
-- only `high`-confidence → 🔴 Important; `med` → 🟡 Nit by default,
-- cap total rendered findings (already done for nits; extend to a global cap).
-
-### L. Prompt-caching for static context 💸
-The system/instruction blocks and CLAUDE.md/conventions are identical across the
-3 passes and across pushes. Use opencode/provider prompt caching where supported
-so repeated context isn't re-billed at full rate.
-
----
-
-## Part 3 — Implementation order (most-obvious-first)
-
-Status on `refactor/action-only-reviewer`:
+The original refactor (action-only; drop the `gh` extension surface) and the
+first improvement wave are done. Kept here as a record; details in git history.
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Refactor to action-only (Part 1) | ✅ done |
+| 1 | Refactor to action-only | ✅ done |
 | 2 | A. Deterministic `render.sh` (drops the LLM format pass) | ✅ done |
 | 3 | B + C. Per-pass timeout/retry + never-post-on-failure | ✅ done |
 | 4 | D. Telemetry → step summary + outputs (timing/findings/diff size) | ✅ done |
 | 5 | F. Diff capping / path filtering | ✅ done |
 | 6 | E. Model tiering (`verify-model` input) | ✅ done |
-| 7 | I/H. Richer gather context + read-files prompt | ✅ done |
-| 8 | G. Incremental review (since `last_reviewed_sha`, patch-id skip) | ⏳ backlog |
-| 9 | K. Confidence gating in render | ⏳ backlog |
-| 10 | J. Inline comments (reviews API) | ⏳ backlog |
-| 11 | L. Prompt caching | ⏳ backlog |
-| 12 | M+. Research-derived items (see Part 4) | ⏳ backlog |
+| 7 | I/H. Richer gather context (threads, issues, commits) + read-files prompt | ✅ done |
+| 8 | Q (partial). `cheap-model` input + intent-compression prep pass | ✅ done |
 
-Each item landed as its own commit.
+Original motivating evidence (two `ai-news` runs, PR #125): zero cost
+telemetry, the LLM format pass was the slowest step (2m50s to template one
+nit), 2.8× runtime variance, full re-review on every push. Items 2–4 fixed the
+first two; incremental review (G) still addresses the last.
+
+### Validated by the field research
+
+Patterns we already ship that the research confirms as best practice:
+
+- **Structured output → deterministic render** (Qodo renders from YAML schema;
+  never lets the model format the final comment).
+- **Generate → verify two-pass** (CodeRabbit Verification agent, BugBot
+  validator, Anthropic plugin validation step, Ellipsis filter chain).
+- **Step-scoped token / tokenless model step** — structurally identical to the
+  OpenAI Codex cookbook's read-only-prepare → no-token-review → write-scoped-
+  publish reference design. `pull_request_target`-with-secrets is the
+  documented anti-pattern; we avoid it.
+- **Comment-trigger author gating** — stricter than OSS PR-Agent (which lets
+  anyone who can comment invoke it).
+- **Intent context first** (linked issues + commits + cheap-model brief) —
+  ContextCRBench: PR description alone +72% F1, issue+PR +78%, vs surrounding
+  code +64%.
+- **Dedup against existing threads and the previous review** (BugBot reads
+  existing comments as a do-not-repeat list).
+- **Aggressive default path exclusions with non-silent truncation notices.**
+
+### De-prioritized by the field research
+
+- ~~**M. Batched 0–10 self-reflection re-rank**~~ — **dropped as designed.**
+  Greptile's verified negative result: LLM-as-judge numeric self-scoring of
+  findings is "nearly random." Replaced by M′ (category kill-list — hard
+  deterministic drops, which Qodo's reflect rubric also hard-codes as
+  score-0 classes rather than trusting the model's number).
+- **Full-codebase RAG/graph indexing** — explicitly out of scope (see
+  Direction).
+- **Prompting harder against nitpicks** — proven not to work (Greptile);
+  invest in kill-lists, gates, and feedback memory instead.
 
 ---
 
-## Part 4 — Competitive landscape (deep research)
+## Part 1 — Backlog, re-prioritized
 
-Synthesis of how leading automated reviewers are built (2026), and what to
-borrow. Confidence: **[V]** verified from vendor docs/eng blog/source; **[VC]**
-vendor self-claim; **[S]** speculative/secondary.
+Goal tags: 💸 cost · 🔮 predictability · 🛡️ robustness · 🎯 quality ·
+📊 observability. Provenance for each idea is in `competitors.md`.
 
-### How the field is split
+### Tier 1 — cheap, proven, fits the bash architecture
 
-Two camps. The most engineering-credible tools (**Cursor BugBot**, **GitHub
-Copilot review**) moved from fixed pipelines to **agentic, tool-calling, runtime-
-context** designs. The graph/RAG camp (**Greptile, CodeRabbit, Qodo, Ellipsis,
-Bito**) competes on **pre-built whole-repo context**. The unresolved tension is
-false-positive volume: graph tools catch more but flag more noise (one third-
-party benchmark: Greptile ~82% bug catch but ~11 FPs/run vs CodeRabbit ~44% / ~2
-FPs — **[VC]**, directional only).
+- **R. Line-numbered hunk re-encoding + deterministic anchor validation 🎯🛡️**
+  (Qodo `__new hunk__`/`__old hunk__`; ai-pr-reviewer did the same).
+  `gather.sh` (awk) rewrites `pr.diff` hunks with absolute new-side line
+  numbers prefixed to every line, so the model *copies* `loc:` anchors instead
+  of computing them. `render.sh` then validates every `loc:` against the set
+  of changed lines extracted from the diff — findings with unanchorable locs
+  are demoted (kept in the summary, flagged) rather than dropped silently or
+  posted with a wrong anchor. Wrong anchors are the most-reported failure mode
+  of diff-anchored reviewers; today our only defense is prompt-level.
+  Prerequisite for J (inline comments).
 
-### Patterns that map directly onto our two-pass + render design
+- **M′. Do-not-flag category kill-list 🎯** (replaces M; Anthropic plugin +
+  claude-code-security-review + Qodo reflect rubric). Two halves:
+  1. Generate prompt gets an explicit do-not-flag list: pre-existing issues,
+     style/formatting, speculative problems ("could potentially…"), anything a
+     linter would catch, generic security hand-waving, docstring/comment/
+     type-hint suggestions, "consider verifying…" advice, unused imports,
+     claims about symbols defined outside the diff. Plus the literal
+     Anthropic-plugin line: *"If you are not certain an issue is real, do not
+     flag it."*
+  2. Verify pass **hard-drops** those categories deterministically (they are
+     named drop criteria, not judgment calls) — mirroring Qodo's automatic
+     score-0 classes.
 
-- **[V] Structured output → deterministic formatting.** Qodo has the LLM emit a
-  fixed Pydantic/YAML schema and renders the Markdown comment in code — never lets
-  the model format the final comment. *We already did this (render.sh). Validated.*
-- **[V] Multi-pass verification.** CodeRabbit (judge stage), Qodo 2.0 (judge
-  agent), Cursor (validator model), Ellipsis (hallucination filter). *We do
-  generate→verify. Validated.*
-- **[V] Intent context is the cheapest, highest-ROI input — beats code context.**
-  ContextCRBench: PR description alone +72% F1, issue+PR +78%, vs surrounding
-  *code* +64% (model-dependent; OSS models sometimes regress).
-  (arxiv 2511.07017). *We added linked-issues + commits in task 7. Validated.*
-- **[V] Dedup against existing comments; don't repeat or re-raise.** BugBot reads
-  existing PR comments as a "do-not-repeat" list (~9/10 → ~1 dupes). *We feed
-  [OPEN]/[RESOLVED] threads to the prompt. Validated.*
+- **K. Confidence gating in render 🎯🔮** (validated: Anthropic 0–100 cut at
+  80; Codex P0/P1-only; BugBot "false positive costs more than false
+  negative"). Keep it a *categorical* gate on the existing `conf:` field —
+  not a numeric re-scoring pass (see de-prioritized M):
+  - `conf: low` findings never render as 🔴 Important (demote to nit or drop),
+  - new input `min-confidence` (default `med`) below which findings are
+    dropped from the comment (still counted in metrics),
+  - global rendered-findings cap alongside the existing nit cap.
 
-### The standout finding (worth a dedicated future epic)
+- **P. Diff compression ladder 💸🔮** (Qodo — copy whole-cloth; replaces the
+  blunt `head -n 4000`). In `gather.sh`, when over budget:
+  1. strip deletion-only hunks (`omit_deletion_hunks`) and reduce
+     fully-deleted files to a `Deleted files:` name list,
+  2. rank files: code files of the repo's dominant languages first, then by
+     patch size descending; drop generated/vendored last-resort content first,
+  3. greedily fit whole file-patches to the line budget (never cut mid-file),
+  4. append the names of files that did NOT fit
+     (`Files not shown (budget): …`) — **the model must always know what it
+     could not see** (today the tail of the diff silently vanishes).
 
-- **⭐ [V] Do NOT use an LLM to self-rate "is this a nit" — it's near-random.**
-  Greptile's verified negative result. What worked: embed every posted comment in
-  a per-team vector DB; **suppress a new comment if cosine-similar to ≥3 unique
-  downvoted comments**, pass if similar to ≥3 upvoted, else default-pass. Address
-  rate 19% → 55% in two weeks. This is a learning-from-feedback loop, not a prompt
-  tweak. (zenml.io Greptile case study.)
+### Tier 2 — medium effort, high value
 
-### New backlog items derived from the research
+- **G. Incremental review + state-in-comment 💸🔮** (ai-pr-reviewer's
+  state-store pattern; PR-Agent `/review -i`). Persist state as a hidden HTML
+  block in our own sticky comment —
+  `<!-- openreview:state {"last_sha":"…","patch_id":"…"} -->`:
+  - on `synchronize`, diff `last_sha..head` and feed the previous review as
+    context; fall back to full review when the base changed (force-push,
+    rebase),
+  - **patch-id skip**: hash the normalized patch; if already reviewed, skip
+    the run entirely,
+  - optional PR-Agent-style guards (min commits / min minutes between
+    auto-runs).
 
-These extend Part 2; ordered by ROI for our architecture.
+- **S. Sticky comment: edit-in-place instead of delete-and-repost 🔮**
+  (PR-Agent, Danger). `post.sh` currently deletes old comments and posts a new
+  one. Switch to editing the marker comment in place with an
+  "updated for commit `<sha>`" line (which also carries the G state block),
+  plus an optional tiny ping comment for notification (PR-Agent's
+  `final_update_message`) — configurable, since delete-and-repost's
+  notification is sometimes wanted.
 
-- **M. Batched 0–10 self-reflection re-rank in the verify pass 🎯** (Qodo, OSS,
-  most directly copyable). Re-present *all* candidates together, score each 0–10
-  with rationale, drop below a configurable threshold. Better-calibrated than the
-  current per-finding keep/drop. Low effort — it's a prompt change to pass 2 plus
-  a numeric gate in render.
-- **N. Evidence-gated findings 🎯** (CodeRabbit "receipts", Ellipsis Evidence).
-  Require each finding to carry a concrete artifact (a grep/`ast-grep` hit or a
-  quoted diff line); drop findings whose evidence can't be re-confirmed. Kills the
-  plausible-but-wrong class.
-- **O. Linter/SAST grounding + judge 🎯** (CodeRabbit runs 20–40 tools; Copilot
-  runs CodeQL+ESLint). Run deterministic tools first (`semgrep`, `ast-grep`,
-  `shellcheck`, `actionlint`), feed their structured findings into pass 1 so the
-  LLM triages real, line-anchored signal instead of inventing it.
-- **G′. Incremental review, properly 💸🔮** (CodeRabbit `auto_incremental_review`,
-  BugBot **patch-id skip**). Persist `last_reviewed_sha` in the marker comment
-  (HTML comment); on `synchronize` review `last_reviewed_sha..head`; **hash the
-  normalized patch and skip entirely if already reviewed.** Cleanest cost win for
-  push-heavy PRs.
-- **J′. Inline comments — API mechanics 🎯.** Anchored comments go through
-  `POST /repos/{o}/{r}/pulls/{n}/reviews` with a `comments[]` array (atomic, one
-  review). `line` MUST be a line in the diff or it 422s — **fuzzy-map and drop
-  unmappable rather than mis-anchor** (qodo `find_line_number_of_relevant_line`,
-  cutoff 0.93). Use ` ```suggestion ` fences for committable fixes. Across runs,
-  minimize the prior run's comments as `OUTDATED` (GraphQL `minimizeComment`) and
-  edit a persistent summary comment in place.
-- **L′. Prompt caching — exact mechanics 💸.** Anthropic: `cache_control`
-  ephemeral, read = 0.1× input, 5m write = 1.25×, min cacheable prefix 1024
-  tokens, ≤4 breakpoints, `tools→system→messages` hierarchy. Put the static
-  rubric + conventions + tool defs *before* the variable diff and breakpoint on
-  the last unchanging block. (Provider-dependent through OpenCode — verify
-  support first.)
-- **Q. Cost-routing with a dedicated cheap model 💸** — ✅ **partially shipped**:
-  `cheap-model` input added; it is now the default verify tier and runs an
-  **intent-compression** prep step (distils linked issues + PR body + commits into
-  a brief the strong generate pass reads instead of the raw text). Still backlog:
-  file summarization, candidate triage/dedup, and PR-description on the cheap tier.
-  (generalizes `verify-model`).
-  Expose two model tiers as inputs — `model` (strong, for the core analysis) and
-  `cheap-model` (small/fast/free). **When `cheap-model` is provided, the engine
-  routes every non-analysis sub-task to it**, reserving the strong model only for
-  the generate (and optionally verify) reasoning. Candidate prep tasks to route to
-  the cheap tier:
-  - **Intent compression** — distil the linked issues + PR body + commit messages
-    into a few-line "what this PR is supposed to do" brief (the high-ROI intent
-    context, §2) instead of dumping raw text into the strong-model prompt.
-  - **Diff/file summarization** — for large changed files, have the cheap model
-    summarise the surrounding context so the strong pass spends its budget on the
-    diff, not on re-reading unchanged code (CodeRabbit's "context enrichment is
-    80–90% of tokens, done by cheap models" pattern).
-  - **Candidate triage / dedup** — a cheap-model first pass over the prev-review
-    and existing comments to pre-drop already-raised/resolved points before the
-    strong model sees them.
-  - **Verify pass** — already covered by `verify-model`; fold it under the same
-    `cheap-model` default so one input configures the whole cheap tier.
-  - **PR-description suggestion** — generate it on the cheap tier; it's not
-    correctness-critical.
+- **T. Cheap-model per-file triage 💸** (the original CodeRabbit trick;
+  completes backlog item Q). Extend the existing cheap tier: before pass 1, a
+  cheap-model pass summarizes each file's diff and emits
+  `NEEDS_REVIEW | APPROVED` per file ("when in doubt, NEEDS_REVIEW").
+  `APPROVED` files (renames, formatting, mechanical changes) are dropped from
+  the strong pass's diff; the per-file summaries are injected as context
+  (Qodo's "AI metadata" chaining). Biggest remaining cost lever; also routes
+  `@@PRDESC` generation to the cheap tier (Q's leftover).
 
-  Design: `cheap-model` empty ⇒ today's behaviour (everything on `model`, no extra
-  calls). Set ⇒ the engine inserts the cheap prep steps and the strong pass
-  receives pre-digested context, so total strong-model tokens drop sharply on big
-  PRs while quality holds (the expensive reasoning still runs on the strong
-  model). `verify-model` becomes an optional override of the cheap tier for the
-  verify pass specifically. Pairs naturally with **L′ prompt caching** (cache the
-  digested brief) and **P diff compression**.
-- **P. Diff compression ladder 💸** (qodo PR-Agent — copy whole-cloth). Optimistic-
-  first; rank files by language then token count; soft/hard buffers; degrade full
-  patch → no-context → deletion-stripped → filename-only → dropped. Our current
-  line-cap (task 5) is the crude version of this.
-- **Telemetry follow-up 📊.** OpenCode headless emits JSONL
-  (`opencode run --format json --auto`); the `step_finish` event carries cost +
-  tokens. Capture it for exact per-pass token/cost (pin a recent OpenCode — older
-  builds could exit before the final `step_finish`, issue #26855). Prefer
-  `serve` + SDK for robust structured output.
+- **J. Inline review comments + suggestion blocks 🎯** (field-standard UX).
+  Opt-in `comment-style: summary|inline|both`:
+  - 🔴 Important findings → one review via
+    `POST /repos/{o}/{r}/pulls/{n}/reviews` with a `comments[]` array (atomic);
+    `line` must be a commentable diff line — **requires R's anchor
+    validation**; unanchorable findings fall back to the summary comment
+    (reviewdog's fallback pattern), never mis-anchored,
+  - ` ```suggestion ` fences only for self-contained fixes with exact-range
+    replacements (Anthropic/Qodo rule),
+  - across runs: minimize the prior run's inline comments as `OUTDATED`
+    (GraphQL `minimizeComment`); summary stays sticky per S.
 
-### Engine-specific notes (OpenCode)
+### Tier 3 — differentiators & measurement
 
-- Read-only reviewer config (already bundled): `tools:{write:false,bash:false}` +
-  `permission:{edit:"deny",bash:"deny"}`; `--auto` is essential in CI to
-  auto-approve permissions.
-- House review standards belong in `AGENTS.md` (OpenCode reads it; CLAUDE.md is
-  the fallback) — our prompt already points the model at CLAUDE.md/`conventions/`.
+- **U. Resolution-rate telemetry 📊** (BugBot's driving metric). On PR close/
+  merge (or a scheduled sweep), a cheap-model call per past finding: "was this
+  addressed in the final diff?" → log resolution rate to the step summary /
+  an output. Turns all future prompt tuning into hill-climbing on a real
+  number instead of vibes. Cheap: `gh` + one call per finding.
 
-### Sources worth reading in full
+- **V. Feedback harvesting → suppression context 🎯** (poor-man's Greptile;
+  read-side of the memory story, Part 3 is the write-side). `gather.sh`
+  additionally fetches 👍/👎 reactions and replies on our previous comments
+  (`GET /issues/comments/{id}/reactions` — free with existing `issues` scope).
+  Downvoted/dismissed findings are fed to generate+verify as explicit
+  suppression context ("the team rejected findings like these — do not raise
+  similar ones"). The only technique Greptile found that actually moved
+  address rate (19% → 55%).
 
-- Ellipsis production architecture (ZenML write-up) — most honest real-world design.
-- `qodo-ai/pr-agent` `algo/` source — directly copyable compression + line-mapping + posting.
-- Greptile "memory and learning" + the ZenML embeddings-suppression case study.
-- CodeRabbit "agentic vs RAG" and "explainable reviews" eng blogs.
-- `anthropics/claude-code-action` — closest design to ours (MCP inline-comment tool + Haiku classifier).
+- **W. Thorough mode: self-consistency voting 🎯💸** (BugBot V1). Optional
+  input `passes: N` — run pass 1 N times with shuffled file order, keep only
+  findings that recur (majority vote by file+line proximity + title
+  similarity), then verify. N× pass-1 cost, so off by default; for
+  release-critical PRs.
 
-### Caveats
+- **N. Evidence-gated findings 🎯** (Ellipsis "Evidence", CodeRabbit
+  receipts). Require each finding to quote the exact diff line it's about;
+  verify (or render, deterministically) re-confirms the quote exists in
+  `pr.diff` and drops findings whose evidence doesn't match. Kills the
+  plausible-but-wrong class; pairs with R.
 
-Headline accuracy numbers are vendor/vendor-adjacent self-reports (directional
-only). Graph-DB/parser internals of Greptile and CodeRabbit are undisclosed.
-Timer-debounce of rapid pushes is an inferred DIY pattern, not vendor-documented
-(patch-id skip + since-last-sha diffing achieve the same end). "Suppress
-pre-existing issues" has no vendor flag — it's a DIY diff-hunk line-range
-intersection (and CodeRabbit deliberately does the opposite via its graph).
+- **O. Linter/SAST grounding 🎯** (CodeRabbit runs 50+; Sourcery hybrid). Run
+  deterministic tools first (`shellcheck`, `actionlint`, `semgrep`,
+  `ast-grep` — whatever fits the repo), feed structured findings into pass 1
+  so the LLM triages real line-anchored signal instead of inventing it, and
+  suppress LLM findings a linter already covers.
+
+- **L′. Prompt caching 💸.** Static rubric + conventions before the variable
+  diff; provider-dependent through OpenCode (Anthropic: `cache_control`
+  ephemeral, read = 0.1× input, min prefix 1024 tokens) — verify OpenCode
+  support first. Greptile attributes a 75% inference-cost drop to aggressive
+  caching.
+
+- **Token/cost telemetry follow-up 📊.** OpenCode headless emits JSONL
+  (`opencode run --format json`); the `step_finish` event carries cost +
+  tokens. Capture for exact per-pass numbers (pin a recent OpenCode; older
+  builds could exit before the final `step_finish`).
+
+### Testing & evals
+
+- **X. Eval playground 📊🛡️** — a way to run the whole pipeline end-to-end on
+  demand, without pushing commits or burning CI on real PRs. Two halves:
+  1. **A permanent playground PR in this repo**: branch `eval/playground` off
+     `main`, containing a dedicated `eval/` folder with fixture code that
+     carries **known, seeded bugs** (an off-by-one, a dropped error check, a
+     race, a convention violation, a pure nit…), opened as a draft PR labeled
+     `do-not-merge` + excluded from the self-test workflow triggers so it
+     never runs CI. It hangs open indefinitely as a stable review target.
+  2. **A local runner** (`eval/run.sh`): wraps the existing local flow from
+     CLAUDE.md (`OR_REPO=… OR_PR=<playground-pr> gather.sh → passes.sh →
+     render.sh`, no `post.sh` by default) so a full review runs from a laptop
+     against the playground PR with any model combo, and prints
+     `opencode-review.md` + timing. Optional `--post` to exercise post.sh
+     against the playground PR only.
+  3. Later: a `eval/expected.md` golden list of the seeded bugs → a crude
+     recall/precision score per run (the field's lesson — Ellipsis runs heavy
+     CI evals; BugBot hill-climbs on resolution rate — you can't tune what
+     you don't measure). Prompt/model changes get compared on the same frozen
+     PR instead of on live traffic.
+
+### Security / robustness quick wins
+
+- **Pin the opencode installer** (currently unpinned `curl | bash`; PR-Agent
+  pins by Docker digest with artifact attestations). At minimum pin a version;
+  ideally verify a checksum.
+- **Warn when a consumer repo's own `opencode.json` replaces the hardened
+  bundled config** (the config-precedence rule silently swaps out the
+  bash/webfetch/websearch denials — layer 1 of the security model).
+- **Word-boundary trigger match**: `grep -qF "@openreview"` fires on the
+  phrase quoted anywhere inside a trusted user's comment; tighten to a
+  word-boundary regex.
+- **Comment-arg hygiene (future)**: if we ever accept options in trigger
+  comments, copy PR-Agent's deny-list approach (never allow comment-supplied
+  model/endpoint/approval settings; config-file-only).
+
+---
+
+## Part 2 — Long-term epic: learning over time
+
+The field's three maturity levels (see `competitors.md` §13):
+
+1. **Static NL rules in repo files** — we have this in embryonic form
+   (CLAUDE.md/`conventions/` prompt hints). Upgrade path: a first-class
+   `.openreview.toml` (or `best_practices.md`) read from the *target* repo
+   with `extra-instructions` and per-path guidance (CodeRabbit
+   `path_instructions`, BUGBOT.md, AGENTS.md are the precedents). Read from
+   the default branch, never from the PR head (PR-Agent's documented trust
+   boundary).
+2. **Feedback signals** — item V above (reactions/replies harvest).
+3. **Persistent per-repo memory** — suppressed finding patterns, learned team
+   preferences, feedback digests, accumulated across PRs. Requires a writable
+   store; the infra-free answer is Part 3's memory repo. A later iteration
+   can add Greptile-style similarity matching (even crude text similarity in
+   bash, or a cheap-model "is this like a previously rejected finding?"
+   check against the memory file — no vector DB needed at our scale).
+
+Order: 1 → 2 → 3. Each level works without the next.
+
+---
+
+## Part 3 — Org-wide deployment & persistent memory (researched 2026-07)
+
+Target flow (verified feasible, **zero hosted infrastructure**): fork this
+repo into an org → from the fork, manually invoke a review of ANY PR in ANY
+org repo → the bot reads existing comments/threads, recalls per-repo memory,
+posts ONE marker-identified comment as `yourapp[bot]`, and updates it on later
+invocations.
+
+### 3.1 The mechanism: central dispatch repo + webhook-less GitHub App
+
+`GITHUB_TOKEN` is repo-scoped — it cannot touch sibling repos. The documented,
+mainstream solution is a **GitHub App with the webhook turned OFF**, used
+purely as a token-minting identity inside Actions
+([`actions/create-github-app-token`](https://github.com/actions/create-github-app-token)).
+GitHub's own docs bless the pattern ("apps used only for authentication should
+uncheck Active; no webhook URL required").
+
+One-time org setup (~10 minutes, no per-target-repo setup at all):
+
+1. Fork/import this repo into the org; add `review-dispatch.yml` with
+   `workflow_dispatch: inputs: {repo, pr}`.
+2. Register a GitHub App under the org: webhook **disabled**; permissions
+   `metadata:read`, `contents:read`, `pull-requests:write`, `issues:write`
+   (+ `contents:write` granted only against the memory repo, §3.3).
+3. Install the App org-wide ("All repositories" — future repos included).
+4. Org secrets/vars: App client ID (var), App private key (secret), LLM creds.
+
+Per run:
+
+```yaml
+- uses: actions/create-github-app-token@v2
+  with:
+    client-id: ${{ vars.REVIEWER_APP_CLIENT_ID }}
+    private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+    owner: ${{ github.repository_owner }}
+    repositories: ${{ inputs.repo }}     # scope down per run
+    permission-contents: read
+    permission-pull-requests: write
+    permission-issues: write
+```
+
+then `actions/checkout` with `repository:`/`ref: refs/pull/N/head`/`token:`,
+and the minted token feeds `gather.sh`/`post.sh` exactly like `GH_TOKEN` today
+— **the step-scoped-token architecture carries over unchanged**. Invocation:
+`gh workflow run review.yml -R org/reviewer -f repo=org/target -f pr=123` or
+the Actions-tab button (requires write access to the reviewer repo — that's
+the permission gate). Comments appear as `yourapp[bot]`; marker dedup makes
+re-runs update in place. Bonus: App-tier rate limits (5k→12.5k req/hr vs
+GITHUB_TOKEN's 1k).
+
+Trade-off to document: the App key can act on every installed repo, and anyone
+who can modify workflows in the reviewer repo can wield it. Mitigations:
+per-run `repositories:` scoping, `permission-*` downscoping, branch protection
++ CODEOWNERS on the reviewer repo, optionally an Actions environment with
+required reviewers on the token-minting job.
+
+Evaluated and rejected for this goal:
+
+- **Org rulesets "required workflows"** — Enterprise-only, `pull_request`-family
+  triggers only (no `workflow_dispatch`/`issue_comment`), and becomes a
+  merge-blocking required check — wrong shape for an on-demand advisory
+  reviewer.
+- **Reusable workflows alone** — still need a ~10-line caller stub in every
+  repo; fine later as the opt-in path for per-repo `@openreview` comment
+  triggers (comment events only fire workflows in the repo where the comment
+  was made), but not needed for the central-dispatch flow.
+- **Hosted webhook server (probot etc.)** — what a "real" GitHub App buys
+  (org-wide comment triggers with zero stubs, sub-second latency) is exactly
+  the infra we're avoiding. Revisit only if comment-trigger-everywhere becomes
+  a hard requirement. Notably, nobody in the field ships the
+  "central dispatch + webhook-less App" pattern as a product — PR-Agent's
+  org-wide story is a self-hosted webhook server; CodeRabbit's is vendor SaaS.
+  **This is a differentiation opportunity.**
+
+### 3.2 Per-PR state
+
+Hidden HTML block inside the existing marker comment
+(`<!-- openreview:state {…} -->`): last-reviewed SHA, patch-id, finding IDs,
+suppression acks. Zero new permissions, invisible when rendered, dies with the
+PR, and the existing MARKER machinery is already 80% of it. (65k-char comment
+cap — keep state small. Anyone with write access can edit it — treat as
+advisory, never as a security boundary.) This is the same pattern
+ai-pr-reviewer used to store reviewed-commit SHAs.
+
+### 3.3 Per-repo learned memory
+
+**A dedicated private `org/openreview-memory` repo**, one file per target repo
+(`memory/<repo>.md`, `prefs/<repo>.toml`, `org.toml`). The App's
+`contents:write` is granted **only here** (second scoped token mint against
+just this repo); product repos never receive bot commits. Full git history,
+human-correctable via PR, private by default. Concurrency: one file per target
+repo + retry on non-fast-forward is plenty at review cadence.
+
+Rejected alternatives (verified):
+
+- **Committed file in the target repo** — needs `contents:write` org-wide
+  (big escalation), fights branch protection, pollutes history. Its read-only
+  cousin (human-maintained `.openreview.toml` in the target repo, bot reads
+  with `contents:read`) IS the plan for per-repo config.
+- **Repo wiki** (PR-Agent-style) — `GITHUB_TOKEN` can push only to its *own*
+  repo's wiki, and only after manual initialization; there is **no wiki
+  permission in the App/fine-grained model** — App-token cross-repo wiki write
+  is unverified/likely broken. OK as an optional human-edited config source,
+  wrong as the bot's write store.
+- **Actions cache/artifacts** — 7-day eviction / branch scoping / run-scoped;
+  not durable or addressable.
+- **Gists** — App installation tokens and fine-grained PATs have no gist
+  support at all; user-owned, not org-owned.
+- **git notes / custom refs** — pushable but invisible in the GitHub UI since
+  2014, needs `contents:write` on targets, hard to debug. Trivia only.
+- **Issues/Discussions as KV** — workable but awkward; no better than the
+  memory repo and needs more machinery.
+
+### 3.4 Summary table
+
+| Need | Store | Extra permissions |
+|---|---|---|
+| Per-PR state (last SHA, finding IDs) | hidden HTML block in the marker comment | none |
+| Per-repo learned memory | `org/openreview-memory` repo, file per target repo | `contents:write` on that one repo |
+| Per-repo config | `.openreview.toml` in the target repo (default branch), human-maintained | none (`contents:read`) |
+| Org-wide config | file in the reviewer/memory repo | none |
+| Feedback signal | reactions + replies on the bot comment (item V) | none |
+
+### 3.5 Implementation sketch (when we get there)
+
+1. `review-dispatch.yml` (workflow_dispatch repo/pr inputs + App token mint +
+   cross-repo checkout) — pure workflow work, no engine changes.
+2. `post.sh`: edit-in-place sticky comment (item S) + state block read/write
+   (item G) — shared foundation.
+3. `gather.sh`: read memory file (if the memory repo is configured) + harvest
+   reactions/replies (item V); prompts gain a "team memory" context section.
+4. A `memory-write` step (token-scoped like gather/post): after each run,
+   append feedback digests / confirmed suppressions to the memory repo.
+5. Optional later: per-repo stub workflow template for `@openreview` comment
+   triggers in repos that want them; GitHub App manifest-flow setup helper.
+
+---
+
+## Part 4 — Suggested implementation order
+
+| Wave | Items | Rationale |
+|---|---|---|
+| 0 | X | Eval playground first — every later wave gets measured against the same frozen PR |
+| 1 | R, M′, K | Quality floor: anchors + kill-list + gating — all prompt/awk work |
+| 2 | P, S, G | Cost + idempotent posting + incremental review (S and G share the comment-state foundation) |
+| 3 | T, J | Cheap triage (biggest remaining cost lever), then inline comments (needs R) |
+| 4 | Part 3 §3.5 steps 1–2 | Org dispatch + App identity — unlocks the fork-into-org story |
+| 5 | V, U, Part 3 §3.5 steps 3–4 | Feedback loop + resolution metric + memory repo — the learning epic |
+| 6 | W, N, O, L′, telemetry | Thorough mode, evidence gating, linter grounding, caching |
+
+Security quick wins (installer pinning, config-replacement warning, trigger
+word-boundary) can land any time as independent commits.
