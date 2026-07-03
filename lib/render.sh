@@ -113,6 +113,11 @@ awk -F'\t' -v OFS='\t' -v min="$MIN_CONF" '
   BEGIN { minr=rank(min) }
   { if (rank($4) >= minr) print }
 ' "$TSV.all" > "$TSV"
+awk -F'\t' -v OFS='\t' -v min="$MIN_CONF" '
+  function rank(c) { return (c=="high"?2:(c=="med"?1:0)) }
+  BEGIN { minr=rank(min) }
+  { if (rank($4) < minr) print }
+' "$TSV.all" > "$TSV.suppressed"
 rm -f "$TSV.all"
 
 # Anchor validation: exact path:line in commentable-lines.tsv -> kept as-is;
@@ -159,7 +164,40 @@ mv "$TSV.annot" "$TSV"
 n_unanchored=$(cat "$TSV.unanchored" 2>/dev/null || echo 0)
 rm -f "$TSV.unanchored"
 
+# Same anchor annotation for suppressed findings, so the agent block can
+# still show them with an anchored flag. Doesn't affect n_unanchored metrics.
+awk -F'\t' -v OFS='\t' -v cf="$COMMENTABLE" '
+  BEGIN {
+    while ((getline line < cf) > 0) {
+      n = split(line, a, "\t")
+      if (n >= 2) commentable[a[1] SUBSEP (a[2]+0)] = 1
+    }
+    close(cf)
+  }
+  {
+    loc = $3; path = loc; hasline = 0
+    idx = match(loc, /:[0-9]+$/)
+    if (idx > 0) { path = substr(loc, 1, idx-1); ln = substr(loc, idx+1) + 0; hasline = 1 }
+    note = ""
+    if (hasline && ((path SUBSEP ln) in commentable)) {
+      note = ""
+    } else if (hasline) {
+      found = 0
+      for (d = 1; d <= 3 && !found; d++) {
+        if ((path SUBSEP (ln+d)) in commentable) { newln = ln+d; found = 1 }
+        else if ((path SUBSEP (ln-d)) in commentable) { newln = ln-d; found = 1 }
+      }
+      if (found) { note = "snapped"; $3 = path ":" newln } else { note = "[unanchored]" }
+    } else {
+      note = "[unanchored]"
+    }
+    print $0, note
+  }
+' "$TSV.suppressed" > "$TSV.suppressed.annot" 2>/dev/null
+mv "$TSV.suppressed.annot" "$TSV.suppressed"
+
 defang_file "$TSV"
+defang_file "$TSV.suppressed"
 defang_file "$PRDESC"
 
 # Parse the rating/reason trailer defensively: unknown/missing rating -> "good"
@@ -179,69 +217,79 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
 
 # 3) Emit the comment.
 {
-  printf '%s\n\n' "$MARKER"
-
   if [ "$n_total" -eq 0 ]; then
+    printf '%s\n\n' "$MARKER"
     printf '✅ No blocking issues found in this diff.\n\n'
   else
-    # bold tally
+    # Tally lives IN the header line — one-glance verdict (the field's
+    # most-praised element). Safe for dedup: MARKER_MATCH is a substring
+    # check, and post.sh only requires the marker token to be present.
     parts=""
     [ "$n_important" -gt 0 ] && parts="$n_important important"
     if [ "$n_nit" -gt 0 ]; then
       nit_word=$([ "$n_nit" -eq 1 ] && echo nit || echo nits)
       [ -n "$parts" ] && parts="$parts · $n_nit $nit_word" || parts="$n_nit $nit_word"
     fi
-    printf '**%s**\n\n' "$parts"
+    printf '%s — %s\n\n' "$MARKER" "$parts"
 
-    # summary table (important first, nits capped)
-    printf '| # | Severity | Finding | Location |\n'
-    printf '|---|----------|---------|----------|\n'
-    awk -F'\t' -v cap="$NIT_CAP" -v hidden="$nits_hidden" '
-      BEGIN { i=0; nit=0 }
+    # flat priority list: 🔴 high-conf important, 🟠 med/low-conf important
+    # (rare — low-conf importants are demoted to nit above), 🟡 nit. Order is
+    # the existing sev/conf/NR ranking — no numbering needed.
+    awk -F'\t' -v cap="$NIT_CAP" '
+      BEGIN { nit=0 }
       {
-        sev=$2; loc=$3; title=$5
+        sev=$2; loc=$3; conf=$4; title=$5; body=$6; note=$9
         if (sev=="nit") { nit++; if (nit>cap) next }
-        i++
-        badge=(sev=="important"?"🔴 Important":"🟡 Nit")
-        printf "| %d | %s | %s | `%s` |\n", i, badge, title, loc
-      }
-      END {
-        if (hidden>0)
-          printf "| | | … +%d more %s | |\n", hidden, (hidden==1?"nit":"nits")
+        dot=(sev=="important"?(conf=="high"?"🔴":"🟠"):"🟡")
+        approx=(note=="[unanchored]") ? " _(location approximate)_" : ""
+        printf "- %s **%s** · `%s`%s — %s\n", dot, title, loc, approx, body
       }
     ' "$TSV"
+    if [ "$nits_hidden" -gt 0 ]; then
+      printf -- '- 🟡 _+%d more %s over the cap_\n' "$nits_hidden" "$([ "$nits_hidden" -eq 1 ] && echo nit || echo nits)"
+    fi
     printf '\n'
 
-    # one detail section per rendered row
-    awk -F'\t' -v cap="$NIT_CAP" '
-      BEGIN { i=0; nit=0 }
-      {
-        sev=$2; loc=$3; conf=$4; title=$5; body=$6; orig_sev=$8; note=$9
-        if (sev=="nit") { nit++; if (nit>cap) next }
-        i++
-        printf "### %d. %s\n", i, title
-        printf "%s\n\n", body
-        printf "<details><summary>Details</summary>\n\n"
-        printf "- **Location:** `%s`\n- **Confidence:** %s\n", loc, conf
-        if (orig_sev != sev)
-          printf "- **Original severity:** %s (demoted: low confidence)\n", orig_sev
-        if (note != "" && note != "[unanchored]")
-          printf "- **Anchor:** %s\n", note
-        else if (note == "[unanchored]")
-          printf "- **Anchor:** [unanchored] — location could not be matched to the diff\n"
-        printf "</details>\n\n"
-      }
-    ' "$TSV"
+    # Agent details block: full machine-readable findings (rendered + capped
+    # nits + confidence-suppressed), so agents asked to fix the review see
+    # everything a human didn't.
+    printf '<details><summary>🔍 Machine-readable findings (for agents)</summary>\n\n'
+    printf '```tsv\n'
+    printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
+    {
+      awk -F'\t' -v OFS='\t' '
+        {
+          sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
+          path=loc; line=""
+          idx = match(loc, /:[0-9]+$/)
+          if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+          anchored = (note == "[unanchored]") ? 0 : 1
+          print sev, conf, path, line, anchored, title, body
+        }
+      ' "$TSV"
+      awk -F'\t' -v OFS='\t' '
+        {
+          sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
+          path=loc; line=""
+          idx = match(loc, /:[0-9]+$/)
+          if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+          anchored = (note == "[unanchored]") ? 0 : 1
+          print sev, conf, path, line, anchored, title, body
+        }
+      ' "$TSV.suppressed"
+    }
+    printf '```\n'
+    printf 'Schema: sev(important|nit) conf(high|med|low) path line anchored(1|0) title body.\n'
+    printf 'Includes ALL findings (even nits over the display cap and confidence-suppressed ones), so agents see what humans didn'"'"'t.\n'
+    printf '</details>\n\n'
   fi
 
   # PR-description rating: render one line only when it's not "good".
   if [ "$PRDESC_RATING" != "good" ]; then
     printf '> 📝 PR description: **%s** — %s\n' "$PRDESC_RATING" "$PRDESC_REASON"
   fi
-  if [ "$n_suppressed" -gt 0 ]; then
-    printf '\n<sub>suppressed by confidence gate: %d</sub>\n' "$n_suppressed"
-  fi
 } > "$OUT"
+rm -f "$TSV.suppressed"
 
 # findings.tsv (comment-style "both" input for post.sh's inline review):
 # one row per RENDERED finding (same important-all + nit-cap selection as the
