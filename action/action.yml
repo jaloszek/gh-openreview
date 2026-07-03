@@ -66,6 +66,10 @@ inputs:
     description: "When true, an edited (not first-created) sticky comment with >=1 important finding also gets a short unmarked ping comment; pruned on the next run."
     required: false
     default: "false"
+  comment-style:
+    description: "`summary` (default) posts only the sticky summary comment. `both` additionally posts a COMMENT-event review with inline comments for anchored important findings; the summary comment always carries every finding regardless of this setting (inline posting is best-effort/fallback-by-design)."
+    required: false
+    default: "summary"
 
 outputs:
   findings-total:
@@ -262,4 +266,5 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         OPENREVIEW_UPDATE_PING: ${{ inputs.update-ping }}
+        OPENREVIEW_COMMENT_STYLE: ${{ inputs.comment-style }}
       run: ${{ github.action_path }}/../lib/post.sh

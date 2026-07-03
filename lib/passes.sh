@@ -8,6 +8,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${OR_DIR:?}"; : "${SCRATCH:?}"; : "${SCRATCH_REL:?}"
+[ -f "$SCRATCH/skip-review" ] && { info "skipped (diff unchanged since last review)"; exit 0; }
 resolve_model
 resolve_cheap_model
 resolve_verify_model
@@ -60,6 +61,15 @@ else
 - $S/pr-commits.md — the branch's commit messages (the author's stated intent)."
 fi
 
+# Incremental review (item G): when gather.sh found a still-ancestor previous
+# SHA, it wrote an additional focused diff — surface it as extra context
+# without replacing the full diff (still needed for surrounding-context reads).
+INCREMENTAL_CONTEXT=""
+if [ -f "$SCRATCH/incremental-note.md" ] && [ -s "$SCRATCH/pr-incremental.diff" ]; then
+  INCREMENTAL_CONTEXT="- $S/incremental-note.md — read this first: it explains how to use the incremental diff below.
+- $S/pr-incremental.diff — the incremental diff (changes since the previous review); focus your review here."
+fi
+
 # The exact output contract shared by both passes and parsed by render.sh.
 FORMAT_SPEC="Write findings in this EXACT record format and nothing else outside it. One record per finding:
 @@FINDING
@@ -89,6 +99,7 @@ Read the context with your read tool:
 - $S/pr-numbered.diff — the diff to review (review ONLY changes in this diff). Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself.
 - $S/pr-meta.json — the PR title, body, and changed files.
 $INTENT_CONTEXT
+$INCREMENTAL_CONTEXT
 - $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
 - $S/prev-review.md — your previous review of an EARLIER version of this PR (may say '(no previous review)').
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.

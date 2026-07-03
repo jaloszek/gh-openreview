@@ -25,6 +25,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${SCRATCH:?}"
+[ -f "$SCRATCH/skip-review" ] && { info "skipped (diff unchanged since last review)"; exit 0; }
 MARKER="${MARKER:-## 🤖 OpenCode Review}"
 NIT_CAP="${OPENREVIEW_NIT_CAP:-3}"
 MIN_CONF="${OPENREVIEW_MIN_CONF:-low}"
@@ -241,6 +242,23 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     printf '\n<sub>suppressed by confidence gate: %d</sub>\n' "$n_suppressed"
   fi
 } > "$OUT"
+
+# findings.tsv (comment-style "both" input for post.sh's inline review):
+# one row per RENDERED finding (same important-all + nit-cap selection as the
+# comment body above): sev, conf, path, line, anchored(0|1), title, body.
+FINDINGS_TSV="$SCRATCH/findings.tsv"
+awk -F'\t' -v OFS='\t' -v cap="$NIT_CAP" '
+  BEGIN { nit=0 }
+  {
+    sev=$2; loc=$3; conf=$4; title=$5; body=$6; note=$9
+    if (sev=="nit") { nit++; if (nit>cap) next }
+    path=loc; line=""
+    idx = match(loc, /:[0-9]+$/)
+    if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+    anchored = (note == "[unanchored]") ? 0 : 1
+    print sev, conf, path, line, anchored, title, body
+  }
+' "$TSV" > "$FINDINGS_TSV"
 
 ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits, ${n_suppressed} suppressed)"
 

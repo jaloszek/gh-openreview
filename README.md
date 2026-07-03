@@ -9,6 +9,12 @@ Free by default (bundled free model), works with any OpenCode provider (OpenCode
 Zen, OpenAI-compatible gateways, AWS Bedrock via OIDC), and built so the **LLM
 pass never sees a GitHub token**.
 
+> **Data retention:** the bundled default model runs on OpenCode Zen's free
+> tier, and free-tier traffic may be used for model improvement/training
+> (paid tiers are documented as zero-retention). For private or sensitive
+> code, set `model`/`cheap-model` to a paid tier (e.g.
+> `opencode/deepseek-v4-flash`) instead of the free default.
+
 ## Quick start
 
 Add `.github/workflows/opencode-review.yml`:
@@ -66,6 +72,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `bot-login` | `github-actions[bot]` | Comment author whose stale reviews are pruned. |
 | `min-confidence` | `low` | Minimum confidence (`low`/`med`/`high`) a finding must have to be rendered. Below-threshold findings are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting. |
 | `update-ping` | `false` | When `true`, editing an existing sticky comment with ≥1 important finding also posts a short unmarked ping comment; pruned on the next run. |
+| `comment-style` | `summary` | `summary` posts only the sticky summary comment. `both` additionally posts a COMMENT-event review with inline comments for anchored important findings; the summary comment always carries every finding regardless of this setting (inline posting is best-effort — a failed inline POST is logged and never fails the run). |
 
 ## Outputs
 
@@ -98,6 +105,20 @@ requirement), the branch's **commit messages**, and **existing discussion** —
 inline review threads tagged `[OPEN]`/`[RESOLVED]` plus general comments — so the
 reviewer defers to humans and never repeats or re-raises a point. **The LLM
 passes read only those files — they never receive a GitHub token.**
+
+### Incremental review
+
+The posted comment embeds a hidden state block (the reviewed commit SHA and a
+`git patch-id` of the diff) as its last line. On the next run:
+
+- If the diff hasn't changed (same patch-id — e.g. re-triggering a review with
+  no new commits), the run skips the LLM passes and posting entirely.
+- Otherwise, if the previously reviewed commit is still an ancestor of the new
+  head, an additional incremental diff (changes since that commit) is handed to
+  the generate pass as extra focus context — the full diff is still reviewed,
+  this only helps the model prioritize.
+- A force-push or rebase that makes the previous commit unreachable falls back
+  silently to a full review.
 
 ## Authentication & models
 

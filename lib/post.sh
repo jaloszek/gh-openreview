@@ -8,6 +8,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${OR_REPO:?}"; : "${OR_PR:?}"; : "${SCRATCH:?}"
+[ -f "$SCRATCH/skip-review" ] && { info "skipped (diff unchanged since last review)"; exit 0; }
 MARKER="${MARKER:-## 🤖 OpenCode Review}"
 export MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
 REVIEW_FILE="$SCRATCH/opencode-review.md"
@@ -31,6 +32,17 @@ HEAD_SHA=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json headRefOid --jq .headRef
 TS=$(date -u +'%Y-%m-%d %H:%M UTC')
 if [ -n "$HEAD_SHA" ]; then
   printf '\n_Updated for commit %s at %s_\n' "${HEAD_SHA:0:7}" "$TS" >> "$REVIEW_FILE"
+fi
+
+# Hidden state block (incremental review, item G): embed as the LAST line so
+# gather.sh can read back what SHA/patch-id this comment reviewed. Base64
+# avoids `-->` and quoting issues; the JSON schema is versioned.
+PATCH_ID=""
+[ -f "$SCRATCH/patch-id" ] && PATCH_ID=$(cat "$SCRATCH/patch-id" 2>/dev/null || echo '')
+if [ -n "$HEAD_SHA" ]; then
+  STATE_JSON=$(printf '{"v":1,"last_sha":"%s","patch_id":"%s"}' "$HEAD_SHA" "$PATCH_ID")
+  STATE_B64=$(printf '%s' "$STATE_JSON" | base64 | tr -d '\n')
+  printf '\n<!-- openreview:state %s -->\n' "$STATE_B64" >> "$REVIEW_FILE"
 fi
 
 # Truncate deterministically — the API 422s past 65,536 chars; budget 60k.
@@ -99,4 +111,86 @@ if [ "$UPDATE_PING" = "true" ] && [ "$edited" = "true" ] && [ "$n_important" -gt
   gh pr comment "$OR_PR" --repo "$OR_REPO" \
     --body "${PING_PREFIX} — ${n_important} important finding(s); see the review comment above."
   info "posted update ping ($n_important important finding(s))"
+fi
+
+# ---------------------------------------------------------------------------
+# Opt-in inline review comments (comment-style=both). Best-effort: the summary
+# comment above always carries every finding, so any failure here is logged
+# and never fails the step (decision: COMMENT-event only, never
+# APPROVE/REQUEST_CHANGES; suggestion blocks are out of scope).
+COMMENT_STYLE="${OPENREVIEW_COMMENT_STYLE:-summary}"
+FINDINGS_TSV="$SCRATCH/findings.tsv"
+if [ "$COMMENT_STYLE" = "both" ] && [ -s "$FINDINGS_TSV" ]; then
+  n_qualifying=$(awk -F'\t' '$1=="important" && $5=="1"{c++} END{print c+0}' "$FINDINGS_TSV")
+  if [ "$n_qualifying" -gt 0 ] && [ -n "$HEAD_SHA" ]; then
+    INLINE_MARKER="<!-- openreview:inline -->"
+    export INLINE_MATCH="$INLINE_MARKER"
+
+    if [ -n "$AUTHOR_LOGIN" ]; then
+      # Minimize this bot's prior inline reviews (classifier OUTDATED) so old
+      # findings don't linger alongside the new ones.
+      REVIEW_IDS=$(gh api graphql -f query='
+        query($owner:String!,$name:String!,$num:Int!){
+          repository(owner:$owner,name:$name){
+            pullRequest(number:$num){
+              reviews(first:100){ nodes{ id author{login} body viewerCanMinimize } }
+            }
+          }
+        }' -f owner="${OR_REPO%/*}" -f name="${OR_REPO#*/}" -F num="$OR_PR" \
+        --jq '.data.repository.pullRequest.reviews.nodes[] | select(.author.login == env.AUTHOR_LOGIN) | select(.body | contains(env.INLINE_MATCH)) | select(.viewerCanMinimize) | .id' 2>/dev/null || echo '')
+      while IFS= read -r rid; do
+        [ -n "$rid" ] || continue
+        gh api graphql -f query='mutation($id:ID!){ minimizeComment(input:{subjectId:$id, classifier:OUTDATED}){ minimizedComment { isMinimized } } }' -f id="$rid" >/dev/null 2>&1 \
+          && info "minimized stale inline review $rid" \
+          || warn "could not minimize inline review $rid"
+      done <<EOF
+$REVIEW_IDS
+EOF
+
+      # Delete any leftover PENDING review by the bot so a crashed prior run
+      # never blocks this one (only one pending review per user per PR).
+      PENDING_IDS=$(gh api "repos/$OR_REPO/pulls/$OR_PR/reviews" --paginate \
+        --jq '.[] | select(.user.login == env.AUTHOR_LOGIN) | select(.state == "PENDING") | .id' 2>/dev/null || echo '')
+      while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        gh api "repos/$OR_REPO/pulls/$OR_PR/reviews/$pid" -X DELETE >/dev/null 2>&1 \
+          && info "deleted stale pending review $pid" \
+          || warn "could not delete pending review $pid"
+      done <<EOF
+$PENDING_IDS
+EOF
+    fi
+
+    # Build one atomic review payload: event COMMENT (never APPROVE/REQUEST_
+    # CHANGES), one comment per qualifying finding. JSON built with awk — no
+    # shell interpolation into string literals.
+    INLINE_PAYLOAD="$SCRATCH/.inline-review.json"
+    awk -F'\t' -v commit="$HEAD_SHA" -v marker="$INLINE_MARKER" '
+      function jsonesc(s) {
+        gsub(/\\/, "\\\\", s)
+        gsub(/"/, "\\\"", s)
+        gsub(/\r/, "", s)
+        gsub(/\t/, "\\t", s)
+        gsub(/\n/, "\\n", s)
+        return s
+      }
+      BEGIN {
+        top = "\xf0\x9f\xa4\x96 Inline findings from the OpenCode review \xe2\x80\x94 details in the summary comment.\n" marker
+        printf "{\"event\":\"COMMENT\",\"body\":\"%s\",\"commit_id\":\"%s\",\"comments\":[", jsonesc(top), jsonesc(commit)
+        n = 0
+      }
+      $1 == "important" && $5 == "1" {
+        path = $3; line = $4 + 0; conf = $2; title = $6; body = $7
+        text = "**" title "**\n\n" body "\n\n_Confidence: " conf "_"
+        if (n > 0) printf ","
+        printf "{\"path\":\"%s\",\"line\":%d,\"side\":\"RIGHT\",\"body\":\"%s\"}", jsonesc(path), line, jsonesc(text)
+        n++
+      }
+      END { printf "]}" }
+    ' "$FINDINGS_TSV" > "$INLINE_PAYLOAD"
+
+    RESP=$(gh api "repos/$OR_REPO/pulls/$OR_PR/reviews" --method POST --input "$INLINE_PAYLOAD" 2>&1) \
+      && ok "posted inline review ($n_qualifying finding(s)) to $OR_REPO#$OR_PR" \
+      || warn "inline review POST failed, falling back to summary comment only: $RESP"
+  fi
 fi
