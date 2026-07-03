@@ -1,0 +1,2 @@
+# subtle: recall-of-3 fixture — no hard must-catch, subtle misses are signal
+RUNS_DEFAULT=5

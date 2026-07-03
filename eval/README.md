@@ -73,10 +73,29 @@ gitignored.
 - **`clean/`** — a rename-only refactor with **zero** bugs. A fixture
   without a golden TSV is a clean control: any important finding fails the
   eval. This catches hallucinated problems.
+- **`quiet/`** — a boring, real `--format json` CLI flag + README blurb with
+  **zero** bugs but salted nit bait (vague name, magic number, missing
+  docstring). Budget-only (no golden TSV): `eval/golden/quiet.expect`
+  (`MAX_IMPORTANTS=0`, `MAX_NITS=2`).
+- **`subtle/`** — a small "refactor: extract helpers, no behavior change"
+  diff across `invoice.py`/`pager.py` hiding **3 real bugs**: a reordered
+  reset that stales a balance read, a `<`→`<=` boundary slip moved into an
+  extracted helper, and a dropped error path while inlining. Answer key:
+  `eval/golden/subtle.tsv`; scored at `RUNS_DEFAULT=5`, recall only (no
+  must-catch — subtle misses are signal, not build failures).
+- **`noisy/`** — a big PR (14 files) adding cache/buffer/exporter/scheduler/
+  notifications/retry/metrics/validators infrastructure, mixed with
+  legitimate churn (a dropped-in test file, a deleted legacy module,
+  wiring changes). Plants 3 critical bugs (silent event-buffer data loss,
+  export path traversal, a scheduler `KeyError` on the default job list)
+  and 4 moderate ones. Answer key: `eval/golden/noisy.tsv`;
+  `eval/golden/noisy.expect` requires catching the 3 criticals
+  (`MUST_CATCH=C01,C02,C03`) within a noise budget (`MAX_NITS=3`,
+  `MAX_TOTAL=12`).
 
-## Planned fixtures — the three review scenarios
+## Design rationale — the three review scenarios
 
-The two fixtures above test *finding* and *not hallucinating*. Real-world
+`clean`/`playground` above test *finding* and *not hallucinating*. Real-world
 reviewer quality has a third dimension: **knowing how much to say**. The
 field's documented failure modes map to three PR shapes, so the target set
 is:

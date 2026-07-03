@@ -1,0 +1,103 @@
+diff --git a/metrix/invoice.py b/metrix/invoice.py
+--- a/metrix/invoice.py
++++ b/metrix/invoice.py
+@@ -8,10 +8,15 @@ LATE_FEE_CENTS = 500
+     8|  GRACE_PERIOD_DAYS = 5
+     9|  
+    10|  
+    11| +def _reset_balance():
+    12| +    """Zero out the carried balance for the next billing period."""
+    13| +    return 0
+    14| +
+    15| +
+    16|  def compute_invoice(tenant_usage, previous_balance):
+    17|      """Compute the amount due this period, resetting the carried balance."""
+    18| +    previous_balance = _reset_balance()
+    19|      adjusted = tenant_usage - previous_balance
+      | -    previous_balance = 0
+    20|      return adjusted
+    21|  
+    22|  
+@@ -22,13 +27,17 @@ def apply_credit(amount, credit_cents):
+    27|      return max(0, amount - credit_cents)
+    28|  
+    29|  
+    30| +def _late_fee(amount):
+    31| +    """Flat late fee for an overdue amount, waived for credits already owed."""
+    32| +    if amount < 0:
+    33| +        return 0
+    34| +    return LATE_FEE_CENTS
+    35| +
+    36| +
+    37|  def apply_late_fee(amount, days_overdue):
+    38|      """Add a flat late fee once the grace period has passed."""
+    39|      if days_overdue > GRACE_PERIOD_DAYS:
+      | -        fee = LATE_FEE_CENTS
+      | -        if amount < 0:
+      | -            fee = 0
+      | -        return amount + fee
+    40| +        return amount + _late_fee(amount)
+    41|      return amount
+    42|  
+    43|  
+@@ -46,15 +55,11 @@ def summarize_invoice(tenant_usage, previous_balance, credit_cents, days_overdue
+    55|  
+    56|  
+    57|  def save_pending(store, pending):
+      | -    """Persist queued invoice adjustments, tolerating a down datastore."""
+      | -    try:
+      | -        store.write_all(pending)
+      | -        return True
+      | -    except ConnectionError:
+      | -        logger.warning("datastore unavailable, will retry pending adjustments")
+      | -        return False
+    58| +    """Persist queued invoice adjustments."""
+    59| +    store.write_all(pending)
+    60| +    return True
+    61|  
+    62|  
+      | -def load_pending(store):
+    63| +def fetch_pending(store):
+    64|      """Load queued invoice adjustments written while the datastore was down."""
+    65|      return store.read_all()
+diff --git a/metrix/pager.py b/metrix/pager.py
+--- a/metrix/pager.py
++++ b/metrix/pager.py
+@@ -10,12 +10,17 @@ def total_pages(total_rows):
+    10|      return (total_rows + PAGE_SIZE - 1) // PAGE_SIZE
+    11|  
+    12|  
+    13| +def _has_more(end, total):
+    14| +    """Whether another page exists beyond the current chunk boundary."""
+    15| +    return end <= total
+    16| +
+    17| +
+    18|  def list_page(events, page):
+    19|      """Return the events for a 1-indexed dashboard page, and whether more exist."""
+    20|      start = (page - 1) * PAGE_SIZE
+    21|      end = start + PAGE_SIZE
+    22|      chunk = events[start:end]
+      | -    has_more = end < len(events)
+    23| +    has_more = _has_more(end, len(events))
+    24|      return chunk, has_more
+    25|  
+    26|  
+@@ -24,12 +29,13 @@ def page_label(page, pages_total):
+    29|      return "page {} of {}".format(page, pages_total)
+    30|  
+    31|  
+    32| +def _clamp(value, low, high):
+    33| +    """Clamp value into the inclusive [low, high] range."""
+    34| +    return max(low, min(value, high))
+    35| +
+    36| +
+    37|  def clamp_page(page, pages_total):
+    38|      """Clamp a requested page number into the valid [1, pages_total] range."""
+    39|      if pages_total <= 0:
+    40|          return 1
+      | -    if page < 1:
+      | -        return 1
+      | -    if page > pages_total:
+      | -        return pages_total
+      | -    return page
+    41| +    return _clamp(page, 1, pages_total)

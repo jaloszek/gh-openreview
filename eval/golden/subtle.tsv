@@ -1,0 +1,4 @@
+# id	file	line	category	sev	description
+S01	metrix/invoice.py	18	logic	important	compute_invoice: previous_balance is reset to 0 before being subtracted, so the carried balance is silently never applied (use-before-reset introduced by reordering)
+S02	metrix/pager.py	15	logic	important	_has_more: boundary changed from `end < total` to `end <= total` while extracting the helper, reporting a phantom next page when the last page exactly fills the chunk
+S03	metrix/invoice.py	59	error-handling	important	save_pending: the try/except around store.write_all was dropped while inlining, so a down datastore now raises instead of being retried
