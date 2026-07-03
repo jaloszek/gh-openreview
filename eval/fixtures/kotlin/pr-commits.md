@@ -1,0 +1,3 @@
+- a1c4f02 feat: add BudgetTracker and async over-budget check
+- 7e0d913 feat: budget-aware monthly report + TRANSPORT category
+- 5b8a1f4 feat: wire up `budget` CLI subcommand

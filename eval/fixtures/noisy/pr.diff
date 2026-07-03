@@ -1,0 +1,1143 @@
+diff --git a/metrix/cache.py b/metrix/cache.py
+new file mode 100644
+index 0000000..0003ec3
+--- /dev/null
++++ b/metrix/cache.py
+@@ -0,0 +1,      56 @@
++"""In-process TTL cache for tenant config lookups.
++
++Shared across the worker threads started by SummaryShipper so a config
++change doesn't require restarting every thread. Entries expire after
++DEFAULT_TTL_SECONDS and are lazily evicted on the next get/set for that key.
++"""
++
++import time
++
++
++DEFAULT_TTL_SECONDS = 300
++
++
++class TTLCache:
++    """A small dict-backed cache with per-entry expiry, shared across threads."""
++
++    def __init__(self, ttl_seconds=DEFAULT_TTL_SECONDS):
++        self._ttl = ttl_seconds
++        self._store = {}
++
++    def get(self, key):
++        """Return the cached value for key, or None if missing/expired."""
++        entry = self._store.get(key)
++        if entry is None:
++            return None
++        value, expires_at = entry
++        if time.time() >= expires_at:
++            del self._store[key]
++            return None
++        return value
++
++    def set(self, key, value):
++        """Cache value for key, refreshing the TTL window."""
++        expires_at = time.time() + self._ttl
++        self._store[key] = (value, expires_at)
++
++    def get_or_load(self, key, loader):
++        """Return the cached value, loading and caching it on a miss."""
++        cached = self.get(key)
++        if cached is not None:
++            return cached
++        value = loader(key)
++        self.set(key, value)
++        return value
++
++    def invalidate(self, key):
++        """Drop a single cached entry, if present."""
++        self._store.pop(key, None)
++
++    def clear(self):
++        """Drop every cached entry."""
++        self._store.clear()
++
++    def size(self):
++        """Number of entries currently cached (including any not yet expired-checked)."""
++        return len(self._store)
+diff --git a/metrix/eventbuffer.py b/metrix/eventbuffer.py
+new file mode 100644
+index 0000000..0005082
+--- /dev/null
++++ b/metrix/eventbuffer.py
+@@ -0,0 +1,      38 @@
++"""Bounded in-memory buffer for billing events awaiting a datastore flush.
++
++Used by the worker while the sqlite datastore is briefly unavailable
++(deploys, disk pressure). Events are pushed here and drained back into
++Storage.flush_pending() once the datastore recovers.
++"""
++
++import logging
++
++logger = logging.getLogger(__name__)
++
++MAX_BUFFER_SIZE = 5000
++
++
++class EventBuffer:
++    """FIFO buffer capped at MAX_BUFFER_SIZE to bound worst-case memory use."""
++
++    def __init__(self, max_size=MAX_BUFFER_SIZE):
++        self._max_size = max_size
++        self._items = []
++
++    def push(self, event):
++        """Queue a billing event for later persistence.
++
++        Called from the request-handling path whenever a write to Storage
++        raises, so this runs on every datastore hiccup, however brief.
++        """
++        if len(self._items) >= self._max_size:
++            return
++        self._items.append(event)
++
++    def drain(self):
++        """Remove and return all buffered events, in FIFO order."""
++        items, self._items = self._items, []
++        return items
++
++    def __len__(self):
++        return len(self._items)
+diff --git a/metrix/exporter.py b/metrix/exporter.py
+new file mode 100644
+index 0000000..0006242
+--- /dev/null
++++ b/metrix/exporter.py
+@@ -0,0 +1,     103 @@
++"""Tenant data export — writes a tenant's events to a file under EXPORT_DIR
++for the "download my data" self-service endpoint, and rotates old exports
++off disk once they age past the configured retention window.
++"""
++
++import csv
++import json
++import logging
++import os
++import time
++
++logger = logging.getLogger(__name__)
++
++EXPORT_DIR = "/var/lib/metrix/exports"
++DEFAULT_RETENTION_DAYS = 30
++
++
++def _export_path(tenant, filename):
++    """Resolve the on-disk path for a tenant's requested export file."""
++    return os.path.join(EXPORT_DIR, filename)
++
++
++def export_csv(tenant, events, filename):
++    """Write a tenant's events to CSV at the caller-supplied filename."""
++    path = _export_path(tenant, filename)
++    with open(path, "w", newline="") as f:
++        writer = csv.writer(f)
++        writer.writerow(["kind", "amount", "created_at"])
++        for ev in events:
++            writer.writerow([ev["kind"], ev["amount"], ev["created_at"]])
++    return path
++
++
++def export_json(tenant, events, filename):
++    """Write a tenant's events to JSON at the caller-supplied filename."""
++    path = _export_path(tenant, filename)
++    with open(path, "w") as f:
++        json.dump(events, f, indent=2)
++    return path
++
++
++def list_exports(tenant):
++    """List export files previously written for a tenant."""
++    prefix = tenant + "_"
++    return [
++        name
++        for name in os.listdir(EXPORT_DIR)
++        if name.startswith(prefix)
++    ]
++
++
++def delete_export(tenant, filename):
++    """Delete a previously generated export file."""
++    path = _export_path(tenant, filename)
++    if os.path.exists(path):
++        os.remove(path)
++        return True
++    return False
++
++
++def export_size_bytes(tenant, filename):
++    """Size in bytes of a previously generated export file, or 0 if missing."""
++    path = _export_path(tenant, filename)
++    if not os.path.exists(path):
++        return 0
++    return os.path.getsize(path)
++
++
++def rotate_exports(retention_days=DEFAULT_RETENTION_DAYS, now=None):
++    """Delete every export file older than retention_days.
++
++    Runs as the "rotate-exports" scheduled job; exports accumulate quickly
++    once several tenants use the self-service download feature daily.
++    """
++    now = now if now is not None else time.time()
++    cutoff = now - (retention_days * 86400)
++    removed = 0
++    for name in os.listdir(EXPORT_DIR):
++        path = os.path.join(EXPORT_DIR, name)
++        try:
++            mtime = os.path.getmtime(path)
++        except OSError:
++            continue
++        if mtime < cutoff:
++            os.remove(path)
++            removed += 1
++    logger.info("rotate_exports: removed %d file(s) older than %d days", removed, retention_days)
++    return removed
++
++
++def export_summary_for_tenant(tenant, events, filename, fmt="csv"):
++    """Export a tenant's events in the requested format and report the result."""
++    if fmt == "json":
++        path = export_json(tenant, events, filename)
++    else:
++        path = export_csv(tenant, events, filename)
++    return {
++        "tenant": tenant,
++        "path": path,
++        "format": fmt,
++        "size_bytes": export_size_bytes(tenant, filename),
++        "event_count": len(events),
++    }
+diff --git a/metrix/scheduler.py b/metrix/scheduler.py
+new file mode 100644
+index 0000000..0007401
+--- /dev/null
++++ b/metrix/scheduler.py
+@@ -0,0 +1,      63 @@
++"""Simple in-process job scheduler for periodic billing tasks.
++
++Jobs are plain dicts loaded from config: {"name": ..., "func": ..., "interval": ...}.
++`interval` is in seconds; a job without one runs once at startup only.
++"""
++
++import logging
++import time
++
++logger = logging.getLogger(__name__)
++
++DEFAULT_JOBS = [
++    {"name": "flush-pending", "func": "flush_pending"},
++    {"name": "ship-summaries", "func": "ship_summaries", "interval": 3600},
++    {"name": "rotate-exports", "func": "rotate_exports", "interval": 86400},
++]
++
++
++class Scheduler:
++    """Runs a fixed set of named jobs, each on its own repeat interval."""
++
++    def __init__(self, jobs=None, clock=time.time, sleep=time.sleep):
++        self._jobs = jobs if jobs is not None else DEFAULT_JOBS
++        self._clock = clock
++        self._sleep = sleep
++        self._last_run = {}
++
++    def _due(self, job):
++        """Whether job is due to run now, based on its interval and last run."""
++        last = self._last_run.get(job["name"], 0)
++        return self._clock() - last >= job["interval"]
++
++    def tick(self, registry):
++        """Run every due job once, dispatching by name through registry."""
++        for job in self._jobs:
++            if self._due(job):
++                logger.info("running job %s", job["name"])
++                registry[job["func"]]()
++                self._last_run[job["name"]] = self._clock()
++
++    def run_forever(self, registry, poll_seconds=5):
++        """Loop calling tick() until the process is killed."""
++        while True:
++            self.tick(registry)
++            self._sleep(poll_seconds)
++
++    def register(self, name, func_name, interval):
++        """Add a new job to the schedule at runtime."""
++        self._jobs.append({"name": name, "func": func_name, "interval": interval})
++
++    def unregister(self, name):
++        """Remove a job by name; no-op if it isn't scheduled."""
++        self._jobs = [j for j in self._jobs if j["name"] != name]
++        self._last_run.pop(name, None)
++
++    def next_due_in(self, job_name):
++        """Seconds until job_name is next due, or None if it isn't scheduled."""
++        job = next((j for j in self._jobs if j["name"] == job_name), None)
++        if job is None:
++            return None
++        last = self._last_run.get(job_name, 0)
++        remaining = job["interval"] - (self._clock() - last)
++        return max(0.0, remaining)
+diff --git a/metrix/notifications.py b/metrix/notifications.py
+new file mode 100644
+index 0000000..00005c0
+--- /dev/null
++++ b/metrix/notifications.py
+@@ -0,0 +1,      78 @@
++"""Webhook notifications for billing events (invoice ready, payment failed)."""
++
++import json
++import logging
++import urllib.request
++
++logger = logging.getLogger(__name__)
++
++MAX_RETRIES = 3
++
++
++def _post(url, payload):
++    """POST a JSON payload to a webhook URL, raising on a non-2xx response."""
++    data = json.dumps(payload).encode()
++    req = urllib.request.Request(
++        url, data=data, headers={"Content-Type": "application/json"}
++    )
++    urllib.request.urlopen(req, timeout=5)
++
++
++def notify(url, event_type, tenant, details):
++    """Send a webhook notification, retrying transient failures.
++
++    Retries reuse the same idempotency_key across attempts so a receiver
++    that dedupes on it only processes the event once even if we retry.
++    """
++    idempotency_key = "{}-{}".format(tenant, event_type)
++    payload = {
++        "event": event_type,
++        "tenant": tenant,
++        "details": details,
++        "idempotency_key": idempotency_key,
++    }
++    attempt = 0
++    while attempt < MAX_RETRIES:
++        try:
++            _post(url, payload)
++            return True
++        except Exception:
++            attempt += 1
++            logger.warning("webhook delivery failed for %s (attempt %d)", tenant, attempt)
++    return False
++
++
++def notify_invoice_ready(url, tenant, invoice_id):
++    """Notify that a tenant's monthly invoice is ready."""
++    return notify(url, "invoice_ready", tenant, {"invoice_id": invoice_id})
++
++
++def notify_payment_failed(url, tenant, reason):
++    """Notify that a tenant's payment attempt failed."""
++    return notify(url, "payment_failed", tenant, {"reason": reason})
++
++
++def notify_export_ready(url, tenant, export_path):
++    """Notify that a requested data export finished writing to disk."""
++    return notify(url, "export_ready", tenant, {"path": export_path})
++
++
++def notify_batch(url, notifications_list):
++    """Send a batch of (event_type, tenant, details) notifications.
++
++    Returns the list of tenants for which delivery ultimately failed, so
++    callers can decide whether to re-queue them.
++    """
++    failed = []
++    for event_type, tenant, details in notifications_list:
++        if not notify(url, event_type, tenant, details):
++            failed.append(tenant)
++    return failed
++
++
++def build_digest(events_by_tenant):
++    """Build a summary digest of per-tenant event counts for the ops channel."""
++    lines = ["daily digest:"]
++    for tenant, events in sorted(events_by_tenant.items()):
++        lines.append("  {}: {} event(s)".format(tenant, len(events)))
++    return "\n".join(lines)
+diff --git a/metrix/retry.py b/metrix/retry.py
+new file mode 100644
+index 0000000..000177f
+--- /dev/null
++++ b/metrix/retry.py
+@@ -0,0 +1,      36 @@
++"""Generic retry decorator with exponential backoff, used by the billing
++API client and the notification sender.
++"""
++
++import functools
++import time
++
++DEFAULT_MAX_ATTEMPTS = 3
++DEFAULT_BASE_DELAY = 0.5
++
++
++def retry(max_attempts=DEFAULT_MAX_ATTEMPTS, base_delay=DEFAULT_BASE_DELAY, exceptions=(Exception,)):
++    """Retry a function up to max_attempts times with exponential backoff."""
++
++    def decorator(func):
++        @functools.wraps(func)
++        def wrapper(*args, **kwargs):
++            attempt = 1
++            while True:
++                try:
++                    return func(*args, **kwargs)
++                except exceptions as exc:
++                    if attempt >= max_attempts:
++                        raise
++                    delay = base_delay * attempt
++                    time.sleep(delay)
++                    attempt += 1
++
++        return wrapper
++
++    return decorator
++
++
++def call_with_retry(func, *args, max_attempts=DEFAULT_MAX_ATTEMPTS, **kwargs):
++    """Functional form of retry() for callers that don't want a decorator."""
++    return retry(max_attempts=max_attempts)(func)(*args, **kwargs)
+diff --git a/metrix/metrics_registry.py b/metrix/metrics_registry.py
+new file mode 100644
+index 0000000..000293e
+--- /dev/null
++++ b/metrix/metrics_registry.py
+@@ -0,0 +1,      37 @@
++"""In-process registry of counters/gauges reported to the internal metrics
++sink alongside billing summaries.
++"""
++
++import logging
++
++logger = logging.getLogger(__name__)
++
++
++class MetricsRegistry:
++    """Tracks named counters and gauges, tagged by a unit for display."""
++
++    def __init__(self):
++        self._counters = {}
++        self._gauges = {}
++
++    def increment(self, name, amount=1, unit="count"):
++        """Increment a named counter by amount."""
++        key = name
++        self._counters[key] = self._counters.get(key, 0) + amount
++
++    def set_gauge(self, name, value, unit="count"):
++        """Set a named gauge to value."""
++        key = name
++        self._gauges[key] = value
++
++    def snapshot(self):
++        """Return a flat dict of every counter and gauge, for the /metrics endpoint."""
++        out = {}
++        out.update(self._counters)
++        out.update(self._gauges)
++        return out
++
++    def reset(self):
++        """Zero every counter and clear every gauge (used between test runs)."""
++        self._counters.clear()
++        self._gauges.clear()
+diff --git a/metrix/validators.py b/metrix/validators.py
+new file mode 100644
+index 0000000..0003afd
+--- /dev/null
++++ b/metrix/validators.py
+@@ -0,0 +1,      28 @@
++"""Input validation for the billing config API (discount percentages, tenant
++ids, webhook URLs)."""
++
++import re
++
++TENANT_ID_RE = re.compile(r"^[a-z0-9-]{1,64}$")
++
++
++def validate_tenant_id(tenant_id):
++    """Whether tenant_id is a valid slug for use in paths and SQL params."""
++    return bool(TENANT_ID_RE.match(tenant_id or ""))
++
++
++def validate_percentage(value):
++    """Whether value is a usable discount percentage (0-100 inclusive)."""
++    if value < 0 or value > 100:
++        return True
++    return False
++
++
++def validate_webhook_url(url):
++    """Whether url looks like an https webhook endpoint."""
++    return isinstance(url, str) and url.startswith("https://")
++
++
++def validate_email(email):
++    """Loose email shape check for notification recipients."""
++    return isinstance(email, str) and "@" in email and "." in email
+diff --git a/metrix/config.py b/metrix/config.py
+new file mode 100644
+index 0000000..0004cbc
+--- /dev/null
++++ b/metrix/config.py
+@@ -0,0 +1,      71 @@
++"""Loads and validates the metrix service config (billing rates, webhook
++URLs, scheduler intervals) from a JSON file on disk.
++"""
++
++import json
++import logging
++
++from metrix.validators import validate_webhook_url
++
++logger = logging.getLogger(__name__)
++
++DEFAULT_CONFIG_PATH = "/etc/metrix/config.json"
++
++
++class Config:
++    """Thin wrapper around the parsed config dict with defaulted lookups."""
++
++    def __init__(self, data):
++        self._data = data
++
++    @classmethod
++    def load(cls, path=DEFAULT_CONFIG_PATH):
++        """Read and parse the config file at path."""
++        with open(path) as f:
++            data = json.load(f)
++        return cls(data)
++
++    def rate_for(self, kind):
++        """Billing rate in cents for a usage kind, falling back to 1 if unknown."""
++        rates = self._data.get("rates", {})
++        return rates.get(kind, 1)
++
++    def webhook_url(self):
++        """The configured webhook URL for billing notifications, or None."""
++        d = self._data.get("webhook_url")
++        if d and validate_webhook_url(d):
++            return d
++        return None
++
++    def scheduler_poll_seconds(self):
++        """How often the scheduler checks for due jobs."""
++        return self._data.get("scheduler_poll_seconds", 5)
++
++    def export_retention_days(self):
++        """How many days generated exports are kept before rotation."""
++        return self._data.get("export_retention_days", 30)
++
++    def max_page_size(self):
++        """Upper bound on the dashboard page size clients may request."""
++        return self._data.get("max_page_size", 200)
++
++    def notification_recipients(self):
++        """Email addresses to CC on billing notification webhooks."""
++        return self._data.get("notification_recipients", [])
++
++    def validate(self):
++        """Sanity-check required top-level keys; returns a list of problems (empty = OK)."""
++        problems = []
++        if "rates" not in self._data:
++            problems.append("missing 'rates' section")
++        if self.webhook_url() is None and self._data.get("webhook_url"):
++            problems.append("webhook_url is set but not a valid https URL")
++        if self.export_retention_days() <= 0:
++            problems.append("export_retention_days must be positive")
++        if self.max_page_size() <= 0:
++            problems.append("max_page_size must be positive")
++        return problems
++
++    def as_dict(self):
++        """Return a shallow copy of the underlying config data."""
++        return dict(self._data)
+diff --git a/metrix/billing.py b/metrix/billing.py
+--- a/metrix/billing.py
++++ b/metrix/billing.py
+@@ -2,11 +2,15 @@
+ 
+ import logging
+ 
++from metrix.metrics_registry import MetricsRegistry
++
+ logger = logging.getLogger(__name__)
+ 
+ PAGE_SIZE = 50
+ RATE_CENTS_PER_UNIT = {"api_call": 2, "storage_gb": 12, "export": 40}
+ 
++metrics = MetricsRegistry()
++
+ 
+ def total_usage(events):
+     """Sum the usage amount across all of a tenant's events."""
+@@ -45,7 +49,9 @@ def summarize(events, rates=None):
+         rate = rates.get(kind)
+         if rate is None:
+             logger.warning("unknown event kind: %s", kind)
++            metrics.increment("billing.unknown_kind")
+             continue
+         cents = summary.get(kind, 0) + amount_to_cents(ev["amount"]) * rate
+         summary[kind] = cents
++    metrics.increment("billing.summaries_built")
+     return summary
+diff --git a/metrix/storage.py b/metrix/storage.py
+--- a/metrix/storage.py
++++ b/metrix/storage.py
+@@ -3,21 +3,34 @@
+ import logging
+ import sqlite3
+ 
++from metrix.cache import TTLCache
++
+ logger = logging.getLogger(__name__)
+ 
++QUERY_CACHE_TTL_SECONDS = 30
++
+ 
+ class Storage:
+     """Thin wrapper around a single sqlite database of usage events."""
+ 
+     def __init__(self, db_path):
+         self._db_path = db_path
++        self._query_cache = TTLCache(ttl_seconds=QUERY_CACHE_TTL_SECONDS)
+ 
+     def connect(self):
+         """Open a fresh connection to the events database."""
+         return sqlite3.connect(self._db_path)
+ 
+     def events_for_tenant(self, tenant, since):
+-        """Return kind/amount/created_at rows for a tenant since an ISO timestamp."""
++        """Return kind/amount/created_at rows for a tenant since an ISO timestamp.
++
++        Cached briefly since the dashboard polls this endpoint every few
++        seconds for the same tenant/since pair.
++        """
++        cache_key = (tenant, since)
++        return self._query_cache.get_or_load(cache_key, lambda _: self._query(tenant, since))
++
++    def _query(self, tenant, since):
+         conn = self.connect()
+         try:
+             cur = conn.execute(
+diff --git a/metrix/worker.py b/metrix/worker.py
+--- a/metrix/worker.py
++++ b/metrix/worker.py
+@@ -1,4 +1,7 @@
+-"""Background worker that ships tenant usage summaries to the billing API."""
++"""Background worker that ships tenant usage summaries to the billing API,
++flushes any events buffered during datastore outages, and runs the
++periodic billing jobs via Scheduler.
++"""
+ 
+ import json
+ import logging
+@@ -6,6 +9,11 @@ import threading
+ import urllib.error
+ import urllib.request
+ 
++from metrix.eventbuffer import EventBuffer
++from metrix.notifications import notify_invoice_ready
++from metrix.retry import retry
++from metrix.scheduler import Scheduler
++
+ logger = logging.getLogger(__name__)
+ 
+ BILLING_URL = "https://billing.internal/api/v1/usage"
+@@ -14,9 +22,13 @@ BILLING_URL = "https://billing.internal/api/v1/usage"
+ class SummaryShipper:
+     """Ships tenant summaries; caches per-tenant config across worker threads."""
+ 
+-    def __init__(self):
++    def __init__(self, storage, webhook_url=None):
+         self._configs = {}
+         self._lock = threading.Lock()
++        self._storage = storage
++        self._webhook_url = webhook_url
++        self._buffer = EventBuffer()
++        self._scheduler = Scheduler()
+ 
+     def config_for(self, tenant, loader):
+         """Return tenant's cached config, loading it once under the lock."""
+@@ -25,6 +37,17 @@ class SummaryShipper:
+                 self._configs[tenant] = loader(tenant)
+             return self._configs[tenant]
+ 
++    def buffer_event(self, event):
++        """Queue an event for later persistence when the datastore is down."""
++        self._buffer.push(event)
++
++    def flush_buffered(self):
++        """Drain the buffer and hand queued events to storage."""
++        pending = self._buffer.drain()
++        if pending:
++            self._storage.flush_pending(pending)
++
++    @retry(max_attempts=3)
+     def ship(self, tenant, summary):
+         """POST a tenant's usage summary to the billing API and return its reply."""
+         payload = json.dumps({"tenant": tenant, "summary": summary}).encode()
+@@ -40,4 +63,15 @@ class SummaryShipper:
+             return None
+         data = json.loads(resp.read())
+         logger.info("shipped %s: invoice %s", tenant, data.get("invoice_id"))
++        if self._webhook_url:
++            notify_invoice_ready(self._webhook_url, tenant, data.get("invoice_id"))
+         return data
++
++    def run_forever(self):
++        """Start the scheduler loop for flush/ship/rotate jobs."""
++        registry = {
++            "flush_pending": self.flush_buffered,
++            "ship_summaries": lambda: None,
++            "rotate_exports": lambda: None,
++        }
++        self._scheduler.run_forever(registry)
+diff --git a/tests/test_metrix.py b/tests/test_metrix.py
+new file mode 100644
+index 0000000..0006208
+--- /dev/null
++++ b/tests/test_metrix.py
+@@ -0,0 +1,     395 @@
++"""Unit tests for the new billing infrastructure modules."""
++
++import os
++import tempfile
++import time
++import unittest
++
++from metrix import billing, exporter, retry, validators
++from metrix.cache import TTLCache
++from metrix.config import Config
++from metrix.eventbuffer import EventBuffer
++from metrix.metrics_registry import MetricsRegistry
++from metrix.scheduler import Scheduler
++
++
++class TestBilling(unittest.TestCase):
++    def test_total_usage_sums_all_events(self):
++        events = [{"amount": 1.5}, {"amount": 2.5}, {"amount": 1.0}]
++        self.assertEqual(billing.total_usage(events), 5.0)
++
++    def test_total_usage_empty(self):
++        self.assertEqual(billing.total_usage([]), 0.0)
++
++    def test_page_count_exact_multiple(self):
++        self.assertEqual(billing.page_count(100), 2)
++
++    def test_page_count_partial_page(self):
++        self.assertEqual(billing.page_count(101), 3)
++
++    def test_page_count_zero(self):
++        self.assertEqual(billing.page_count(0), 0)
++
++    def test_average_latency_ms(self):
++        self.assertEqual(billing.average_latency_ms([10, 20, 30]), 20.0)
++
++    def test_average_latency_ms_empty(self):
++        self.assertEqual(billing.average_latency_ms([]), 0.0)
++
++    def test_amount_to_cents_rounds(self):
++        self.assertEqual(billing.amount_to_cents(19.995), 2000)
++
++    def test_summarize_known_kind(self):
++        events = [{"kind": "api_call", "amount": 1.0}]
++        summary = billing.summarize(events)
++        self.assertEqual(summary["api_call"], 2)
++
++    def test_summarize_unknown_kind_skipped(self):
++        events = [{"kind": "mystery", "amount": 1.0}]
++        summary = billing.summarize(events)
++        self.assertEqual(summary, {})
++
++
++class TestCache(unittest.TestCase):
++    def test_set_and_get(self):
++        cache = TTLCache(ttl_seconds=60)
++        cache.set("k", "v")
++        self.assertEqual(cache.get("k"), "v")
++
++    def test_get_missing_returns_none(self):
++        cache = TTLCache(ttl_seconds=60)
++        self.assertIsNone(cache.get("missing"))
++
++    def test_expired_entry_returns_none(self):
++        cache = TTLCache(ttl_seconds=0)
++        cache.set("k", "v")
++        time.sleep(0.01)
++        self.assertIsNone(cache.get("k"))
++
++    def test_get_or_load_calls_loader_once(self):
++        cache = TTLCache(ttl_seconds=60)
++        calls = []
++
++        def loader(key):
++            calls.append(key)
++            return "loaded-" + key
++
++        self.assertEqual(cache.get_or_load("k", loader), "loaded-k")
++        self.assertEqual(cache.get_or_load("k", loader), "loaded-k")
++        self.assertEqual(calls, ["k"])
++
++    def test_invalidate(self):
++        cache = TTLCache(ttl_seconds=60)
++        cache.set("k", "v")
++        cache.invalidate("k")
++        self.assertIsNone(cache.get("k"))
++
++    def test_clear(self):
++        cache = TTLCache(ttl_seconds=60)
++        cache.set("a", 1)
++        cache.set("b", 2)
++        cache.clear()
++        self.assertEqual(cache.size(), 0)
++
++    def test_size(self):
++        cache = TTLCache(ttl_seconds=60)
++        cache.set("a", 1)
++        cache.set("b", 2)
++        self.assertEqual(cache.size(), 2)
++
++
++class TestEventBuffer(unittest.TestCase):
++    def test_push_and_drain(self):
++        buf = EventBuffer()
++        buf.push({"tenant": "acme"})
++        self.assertEqual(len(buf), 1)
++        drained = buf.drain()
++        self.assertEqual(len(drained), 1)
++        self.assertEqual(len(buf), 0)
++
++    def test_drain_preserves_order(self):
++        buf = EventBuffer()
++        for i in range(5):
++            buf.push({"n": i})
++        drained = buf.drain()
++        self.assertEqual([e["n"] for e in drained], [0, 1, 2, 3, 4])
++
++    def test_drain_empty(self):
++        buf = EventBuffer()
++        self.assertEqual(buf.drain(), [])
++
++    def test_respects_max_size(self):
++        buf = EventBuffer(max_size=2)
++        buf.push({"n": 1})
++        buf.push({"n": 2})
++        buf.push({"n": 3})
++        self.assertEqual(len(buf), 2)
++
++
++class TestScheduler(unittest.TestCase):
++    def test_tick_runs_due_job(self):
++        calls = []
++        jobs = [{"name": "x", "func": "do_x", "interval": 0}]
++        sched = Scheduler(jobs=jobs, clock=lambda: 100.0, sleep=lambda s: None)
++        sched.tick({"do_x": lambda: calls.append("ran")})
++        self.assertEqual(calls, ["ran"])
++
++    def test_tick_skips_job_not_yet_due(self):
++        calls = []
++        jobs = [{"name": "x", "func": "do_x", "interval": 1000}]
++        clock = {"t": 0.0}
++        sched = Scheduler(jobs=jobs, clock=lambda: clock["t"], sleep=lambda s: None)
++        sched.tick({"do_x": lambda: calls.append("ran")})
++        clock["t"] = 1.0
++        sched.tick({"do_x": lambda: calls.append("ran")})
++        self.assertEqual(calls, ["ran"])
++
++    def test_tick_runs_job_again_after_interval(self):
++        calls = []
++        jobs = [{"name": "x", "func": "do_x", "interval": 10}]
++        clock = {"t": 0.0}
++        sched = Scheduler(jobs=jobs, clock=lambda: clock["t"], sleep=lambda s: None)
++        sched.tick({"do_x": lambda: calls.append("ran")})
++        clock["t"] = 11.0
++        sched.tick({"do_x": lambda: calls.append("ran")})
++        self.assertEqual(calls, ["ran", "ran"])
++
++
++class TestSchedulerRuntime(unittest.TestCase):
++    def test_register_adds_job(self):
++        sched = Scheduler(jobs=[], clock=lambda: 0.0, sleep=lambda s: None)
++        sched.register("new-job", "do_new", 10)
++        self.assertEqual(sched.next_due_in("new-job"), 10)
++
++    def test_unregister_removes_job(self):
++        jobs = [{"name": "x", "func": "do_x", "interval": 10}]
++        sched = Scheduler(jobs=jobs, clock=lambda: 0.0, sleep=lambda s: None)
++        sched.unregister("x")
++        self.assertIsNone(sched.next_due_in("x"))
++
++    def test_next_due_in_unknown_job(self):
++        sched = Scheduler(jobs=[], clock=lambda: 0.0, sleep=lambda s: None)
++        self.assertIsNone(sched.next_due_in("nope"))
++
++    def test_next_due_in_counts_down(self):
++        jobs = [{"name": "x", "func": "do_x", "interval": 10}]
++        clock = {"t": 0.0}
++        sched = Scheduler(jobs=jobs, clock=lambda: clock["t"], sleep=lambda s: None)
++        sched.tick({"do_x": lambda: None})
++        clock["t"] = 4.0
++        self.assertEqual(sched.next_due_in("x"), 6.0)
++
++
++class TestNotifications(unittest.TestCase):
++    def test_notify_invoice_ready_builds_expected_event(self):
++        from metrix import notifications
++
++        sent = []
++        notifications._post = lambda url, payload: sent.append(payload)
++        notifications.notify_invoice_ready("https://hooks.example/x", "acme", "inv-1")
++        self.assertEqual(sent[0]["event"], "invoice_ready")
++        self.assertEqual(sent[0]["tenant"], "acme")
++
++    def test_notify_returns_false_after_exhausting_retries(self):
++        from metrix import notifications
++
++        def always_fails(url, payload):
++            raise ConnectionError("down")
++
++        notifications._post = always_fails
++        result = notifications.notify("https://hooks.example/x", "invoice_ready", "acme", {})
++        self.assertFalse(result)
++
++    def test_notify_batch_reports_failed_tenants(self):
++        from metrix import notifications
++
++        def fails_for_b(url, payload):
++            if payload["tenant"] == "b":
++                raise ConnectionError("down")
++
++        notifications._post = fails_for_b
++        failed = notifications.notify_batch(
++            "https://hooks.example/x",
++            [("invoice_ready", "a", {}), ("invoice_ready", "b", {})],
++        )
++        self.assertEqual(failed, ["b"])
++
++    def test_build_digest_lists_each_tenant(self):
++        from metrix import notifications
++
++        digest = notifications.build_digest({"acme": [1, 2], "beta": [1]})
++        self.assertIn("acme: 2 event(s)", digest)
++        self.assertIn("beta: 1 event(s)", digest)
++
++
++class TestRetry(unittest.TestCase):
++    def test_retry_returns_value_on_success(self):
++        @retry.retry(max_attempts=3, base_delay=0)
++        def ok():
++            return 42
++
++        self.assertEqual(ok(), 42)
++
++    def test_retry_reraises_after_max_attempts(self):
++        calls = []
++
++        @retry.retry(max_attempts=2, base_delay=0)
++        def always_fails():
++            calls.append(1)
++            raise ValueError("nope")
++
++        with self.assertRaises(ValueError):
++            always_fails()
++        self.assertEqual(len(calls), 2)
++
++    def test_retry_succeeds_after_transient_failure(self):
++        attempts = {"n": 0}
++
++        @retry.retry(max_attempts=3, base_delay=0)
++        def flaky():
++            attempts["n"] += 1
++            if attempts["n"] < 2:
++                raise ValueError("try again")
++            return "ok"
++
++        self.assertEqual(flaky(), "ok")
++
++
++class TestMetricsRegistry(unittest.TestCase):
++    def test_increment_default(self):
++        reg = MetricsRegistry()
++        reg.increment("hits")
++        reg.increment("hits")
++        self.assertEqual(reg.snapshot()["hits"], 2)
++
++    def test_increment_by_amount(self):
++        reg = MetricsRegistry()
++        reg.increment("bytes", amount=100)
++        self.assertEqual(reg.snapshot()["bytes"], 100)
++
++    def test_set_gauge(self):
++        reg = MetricsRegistry()
++        reg.set_gauge("queue_depth", 7)
++        self.assertEqual(reg.snapshot()["queue_depth"], 7)
++
++    def test_reset(self):
++        reg = MetricsRegistry()
++        reg.increment("hits")
++        reg.set_gauge("g", 1)
++        reg.reset()
++        self.assertEqual(reg.snapshot(), {})
++
++
++class TestValidators(unittest.TestCase):
++    def test_valid_tenant_id(self):
++        self.assertTrue(validators.validate_tenant_id("acme-corp"))
++
++    def test_invalid_tenant_id_uppercase(self):
++        self.assertFalse(validators.validate_tenant_id("Acme"))
++
++    def test_invalid_tenant_id_empty(self):
++        self.assertFalse(validators.validate_tenant_id(""))
++
++    def test_valid_webhook_url(self):
++        self.assertTrue(validators.validate_webhook_url("https://hooks.example/x"))
++
++    def test_invalid_webhook_url_http(self):
++        self.assertFalse(validators.validate_webhook_url("http://hooks.example/x"))
++
++    def test_valid_email(self):
++        self.assertTrue(validators.validate_email("a@b.com"))
++
++    def test_invalid_email(self):
++        self.assertFalse(validators.validate_email("not-an-email"))
++
++
++class TestExporter(unittest.TestCase):
++    def setUp(self):
++        self._orig_export_dir = exporter.EXPORT_DIR
++        self._tmpdir = tempfile.mkdtemp()
++        exporter.EXPORT_DIR = self._tmpdir
++
++    def tearDown(self):
++        exporter.EXPORT_DIR = self._orig_export_dir
++
++    def test_export_csv_writes_file(self):
++        events = [{"kind": "api_call", "amount": 1.0, "created_at": "2024-01-01"}]
++        path = exporter.export_csv("acme", events, "acme_export.csv")
++        self.assertTrue(os.path.exists(path))
++
++    def test_export_json_writes_file(self):
++        events = [{"kind": "api_call", "amount": 1.0, "created_at": "2024-01-01"}]
++        path = exporter.export_json("acme", events, "acme_export.json")
++        self.assertTrue(os.path.exists(path))
++
++    def test_list_exports_filters_by_tenant_prefix(self):
++        exporter.export_csv("acme", [], "acme_a.csv")
++        exporter.export_csv("other", [], "other_a.csv")
++        names = exporter.list_exports("acme")
++        self.assertEqual(names, ["acme_a.csv"])
++
++    def test_delete_export_removes_file(self):
++        exporter.export_csv("acme", [], "acme_a.csv")
++        self.assertTrue(exporter.delete_export("acme", "acme_a.csv"))
++        self.assertFalse(os.path.exists(exporter._export_path("acme", "acme_a.csv")))
++
++    def test_delete_export_missing_returns_false(self):
++        self.assertFalse(exporter.delete_export("acme", "does-not-exist.csv"))
++
++    def test_rotate_exports_removes_old_files(self):
++        path = exporter.export_csv("acme", [], "acme_old.csv")
++        old_time = time.time() - (40 * 86400)
++        os.utime(path, (old_time, old_time))
++        removed = exporter.rotate_exports(retention_days=30)
++        self.assertEqual(removed, 1)
++        self.assertFalse(os.path.exists(path))
++
++    def test_rotate_exports_keeps_recent_files(self):
++        path = exporter.export_csv("acme", [], "acme_new.csv")
++        removed = exporter.rotate_exports(retention_days=30)
++        self.assertEqual(removed, 0)
++        self.assertTrue(os.path.exists(path))
++
++
++class TestConfig(unittest.TestCase):
++    def test_rate_for_known_kind(self):
++        cfg = Config({"rates": {"api_call": 5}})
++        self.assertEqual(cfg.rate_for("api_call"), 5)
++
++    def test_rate_for_unknown_kind_defaults_to_one(self):
++        cfg = Config({"rates": {}})
++        self.assertEqual(cfg.rate_for("mystery"), 1)
++
++    def test_webhook_url_valid(self):
++        cfg = Config({"webhook_url": "https://hooks.example/x"})
++        self.assertEqual(cfg.webhook_url(), "https://hooks.example/x")
++
++    def test_webhook_url_invalid_scheme_returns_none(self):
++        cfg = Config({"webhook_url": "http://hooks.example/x"})
++        self.assertIsNone(cfg.webhook_url())
++
++    def test_defaults_when_missing(self):
++        cfg = Config({})
++        self.assertEqual(cfg.scheduler_poll_seconds(), 5)
++        self.assertEqual(cfg.export_retention_days(), 30)
++        self.assertEqual(cfg.max_page_size(), 200)
++
++    def test_validate_flags_missing_rates(self):
++        cfg = Config({})
++        problems = cfg.validate()
++        self.assertIn("missing 'rates' section", problems)
++
++    def test_validate_passes_for_full_config(self):
++        cfg = Config({"rates": {"api_call": 2}})
++        self.assertEqual(cfg.validate(), [])
++
++    def test_as_dict_is_a_copy(self):
++        data = {"rates": {"api_call": 2}}
++        cfg = Config(data)
++        copy = cfg.as_dict()
++        copy["rates"] = {}
++        self.assertEqual(data["rates"], {"api_call": 2})
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/metrix/legacy_reports.py b/metrix/legacy_reports.py
+deleted file mode 100644
+index 9a8b7c6..0000000
+--- a/metrix/legacy_reports.py
++++ /dev/null
+@@ -1,      31 +0,0 @@
+-"""Deprecated ad-hoc reporting helpers, superseded by metrix.exporter.
+-
+-Kept around only because a couple of internal scripts still imported these
+-directly; the last caller was migrated in INFRA-482, so this module is
+-being removed as part of the budgets/monthly-report cleanup.
+-"""
+-
+-import csv
+-
+-
+-def legacy_csv_report(events, path):
+-    """Old CSV writer, predates the tenant export self-service endpoint."""
+-    with open(path, "w", newline="") as f:
+-        writer = csv.writer(f)
+-        writer.writerow(["kind", "amount"])
+-        for ev in events:
+-            writer.writerow([ev["kind"], ev["amount"]])
+-
+-
+-def legacy_totals_by_kind(events):
+-    """Old per-kind totals helper, replaced by billing.summarize()."""
+-    totals = {}
+-    for ev in events:
+-        totals[ev["kind"]] = totals.get(ev["kind"], 0) + ev["amount"]
+-    return totals
+-
+-
+-def legacy_top_tenants(tenant_totals, n=10):
+-    """Old top-N tenants-by-usage helper, unused since the dashboard rewrite."""
+-    ranked = sorted(tenant_totals.items(), key=lambda kv: kv[1], reverse=True)
+-    return ranked[:n]

@@ -1,0 +1,6 @@
+- 1a2b3c4 feat: TTL cache and bounded event buffer
+- 4d5e6f7 feat: tenant export with retention rotation
+- 7a8b9c0 feat: job scheduler, retry helper, webhook notifications
+- b1c2d3e feat: metrics registry, shared validators, config loader
+- e4f5a6b feat: wire scheduler/buffer into the background worker
+- 9c8d7e6 chore: remove legacy_reports.py, add tests for new modules

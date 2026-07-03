@@ -1,0 +1,1 @@
+- 9d2e4aa feat: add --format json to the usage report CLI

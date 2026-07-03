@@ -1,0 +1,9 @@
+# id	file	line	category	sev	description
+K01	src/Budget.kt	21	null-edge	important	remainingCents: limits[category]!! crashes for any category with no configured limit (legitimately absent from the map)
+K02	src/Main.kt	82	null-edge	important	handleReport: "report monthly" builds a BudgetTracker() and never calls initialize(), so monthlySummary's use of tracker.limits throws UninitializedPropertyAccessException
+K03	src/Main.kt	67	convention	nit	handleAdd: category === Category.MISC uses reference equality where == was intended; harmless for enum singletons today but the wrong operator to reach for
+K04	src/Report.kt	73	logic	important	budgetGroup: when(category) has no branch for the newly added TRANSPORT case and no else, so group stays "" (statement form compiles, TRANSPORT rows render with a blank group tag) instead of failing loudly
+K05	src/Report.kt	87	logic	important	monthlySummary: avgPerDayCents = monthTotal / today.dayOfMonth is integer division on cents, truncating the daily average instead of rounding
+K06	src/Budget.kt	34	error-handling	important	loadLimits: runCatching { parseLimitLine(line) }.getOrNull() silently drops malformed limit lines with no warning, so a typo'd config line just vanishes
+K07	src/Budget.kt	80	race	important	checkAllAsync: messages (a plain MutableList) is appended to from concurrent GlobalScope.async coroutines with no synchronization, racing on the shared list
+K08	src/Report.kt	105	logic	important	topExpensesThisMonth: for (i in 0..limit) should be 0 until limit — off-by-one indexes one past the intended range and throws when limit == month.size

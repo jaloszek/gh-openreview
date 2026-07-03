@@ -1,0 +1,13 @@
+# id	file	line	category	sev	description
+B01	metrix/billing.py	14	logic	important	total_usage: range(len(events) - 1) skips the last event, undercounting usage
+B02	metrix/billing.py	21	logic	important	page_count: floor division drops the final partial page (needs ceiling)
+B03	metrix/auth.py	25	null-edge	important	token_from_header: auth.split(" ")[1] raises IndexError on a missing/malformed Authorization header
+B04	metrix/billing.py	27	null-edge	important	average_latency_ms: ZeroDivisionError when samples is empty
+B05	metrix/storage.py	63	error-handling	important	flush_pending: bare except swallows insert failures, silently dropping queued events
+B06	metrix/worker.py	37	error-handling	important	ship: on URLError the except only logs, then resp.read() hits an unbound resp (NameError)
+B07	metrix/storage.py	48	resource-leak	important	events_for_tenant: early return on empty rows skips conn.close(), leaking the sqlite connection
+B08	metrix/worker.py	22	race	important	config_for: unlocked check-then-act on the shared _configs dict (self._lock is never used)
+B09	metrix/storage.py	44	security	important	events_for_tenant: tenant/since interpolated into SQL via f-string — SQL injection
+B10	metrix/auth.py	31	security	important	check_api_token: MD5 used to digest API tokens (broken hash for a credential)
+B11	metrix/billing.py	44	convention	nit	summarize: print() for the unknown-kind warning instead of the module logger
+B12	metrix/billing.py	32	subtle	important	amount_to_cents: int(amount * 100) truncates float error, e.g. 19.99 becomes 1998 cents
