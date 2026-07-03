@@ -83,6 +83,13 @@ if [ -f "$SCRATCH/incremental-note.md" ] && [ -s "$SCRATCH/pr-incremental.diff" 
 - $S/pr-incremental.diff — the incremental diff (changes since the previous review); focus your review here."
 fi
 
+# Open-PR cross-context (TASK-30): other open PRs touching the same files,
+# when gather.sh found any overlap.
+OPEN_PRS_CONTEXT=""
+if [ -s "$SCRATCH/open-prs.md" ]; then
+  OPEN_PRS_CONTEXT="- $S/open-prs.md — other OPEN PRs touch the same files — consider conflicting or duplicated work, and whether this PR depends on or races them. Mention only when concretely relevant."
+fi
+
 GENERATE_FAILED=0
 
 # --- PASS 1: GENERATE --------------------------------------------------------
@@ -97,6 +104,7 @@ Read the context with your read tool:
 - $S/pr-meta.json — the PR title, body, and changed files.
 $INTENT_CONTEXT
 $INCREMENTAL_CONTEXT
+$OPEN_PRS_CONTEXT
 - $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
 - $S/prev-review.md — your previous review of an EARLIER version of this PR (may say '(no previous review)').
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.

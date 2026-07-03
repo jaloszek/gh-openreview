@@ -352,6 +352,43 @@ OWNER="${OR_REPO%%/*}"; REPO="${OR_REPO##*/}"
 } > "$SCRATCH/pr-comments.md" 2>/dev/null || true
 [ -s "$SCRATCH/pr-comments.md" ] || echo "(no discussion yet)" > "$SCRATCH/pr-comments.md"
 
+# Open-PR cross-context: other OPEN PRs in the repo that touch the same files
+# as this PR — concurrent-change awareness. Best-effort; absent-silent (no
+# file written) on API error, no other open PRs, or no file overlap.
+rm -f "$SCRATCH/open-prs.md"
+OWN_FILES_SORTED=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json files --jq '.files[].path' 2>/dev/null | sort -u || true)
+if [ -n "$OWN_FILES_SORTED" ]; then
+  # One line per other open PR: number<TAB>title<TAB>comma-joined-file-paths.
+  gh pr list --repo "$OR_REPO" --state open --json number,title,files --limit 30 \
+    --jq --arg self "$OR_PR" '.[] | select((.number|tostring) != $self) | "\(.number)\t\(.title)\t\([.files[].path] | join(","))"' \
+    2>/dev/null > "$SCRATCH/.open-prs-raw.tsv" || true
+  if [ -s "$SCRATCH/.open-prs-raw.tsv" ]; then
+    : > "$SCRATCH/.open-prs-overlap.tsv"
+    while IFS="$(printf '\t')" read -r num title files; do
+      [ -n "$num" ] || continue
+      shared=$(comm -12 <(printf '%s\n' "$OWN_FILES_SORTED") <(printf '%s\n' "$files" | tr ',' '\n' | sort -u))
+      [ -n "$shared" ] || continue
+      nshared=$(printf '%s\n' "$shared" | grep -c .)
+      shared4=$(printf '%s\n' "$shared" | head -4 | paste -sd, -)
+      printf '%s\t%s\t%s\t%s\n' "$nshared" "$num" "$title" "$shared4" >> "$SCRATCH/.open-prs-overlap.tsv"
+    done < "$SCRATCH/.open-prs-raw.tsv"
+    if [ -s "$SCRATCH/.open-prs-overlap.tsv" ]; then
+      {
+        echo "## Other open PRs touching the same files"
+        sort -t "$(printf '\t')" -k1,1rn "$SCRATCH/.open-prs-overlap.tsv" | head -5 \
+          | while IFS="$(printf '\t')" read -r _n num title shared4; do
+              printf '#%s "%s" also touches: %s\n' "$num" "$title" "$shared4"
+            done
+      } > "$SCRATCH/open-prs.md"
+    fi
+    rm -f "$SCRATCH/.open-prs-overlap.tsv"
+  fi
+  rm -f "$SCRATCH/.open-prs-raw.tsv"
+fi
+if [ -s "$SCRATCH/open-prs.md" ]; then
+  info "open-PR overlap: $(($(wc -l < "$SCRATCH/open-prs.md" | tr -d ' ') - 1)) overlapping PR(s)"
+fi
+
 # Strip invisible-Unicode smuggling vectors from every fetched text context
 # file before the model sees it (pr-meta.json values are left alone).
 sanitize_text "$SCRATCH/pr.diff"
@@ -361,6 +398,7 @@ sanitize_text "$SCRATCH/linked-issues.md"
 sanitize_text "$SCRATCH/pr-commits.md"
 sanitize_text "$SCRATCH/pr-comments.md"
 sanitize_text "$SCRATCH/prev-review.md"
+[ -f "$SCRATCH/open-prs.md" ] && sanitize_text "$SCRATCH/open-prs.md"
 
 DIFF_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
 echo "DIFF_LINES=$DIFF_LINES" >> "$SCRATCH/metrics.env"
