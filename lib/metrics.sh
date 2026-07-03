@@ -7,6 +7,7 @@ set -uo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${SCRATCH:?}"
+[ -f "$SCRATCH/skip-review" ] && { info "skipped (diff unchanged since last review)"; exit 0; }
 METRICS="$SCRATCH/metrics.env"
 
 # Defaults so a partial run still reports something sane.

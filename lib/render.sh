@@ -25,6 +25,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${SCRATCH:?}"
+[ -f "$SCRATCH/skip-review" ] && { info "skipped (diff unchanged since last review)"; exit 0; }
 MARKER="${MARKER:-## 🤖 OpenCode Review}"
 NIT_CAP="${OPENREVIEW_NIT_CAP:-3}"
 MIN_CONF="${OPENREVIEW_MIN_CONF:-low}"

@@ -8,6 +8,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 : "${OR_REPO:?}"; : "${OR_PR:?}"; : "${SCRATCH:?}"
+[ -f "$SCRATCH/skip-review" ] && { info "skipped (diff unchanged since last review)"; exit 0; }
 MARKER="${MARKER:-## 🤖 OpenCode Review}"
 export MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
 REVIEW_FILE="$SCRATCH/opencode-review.md"
@@ -31,6 +32,17 @@ HEAD_SHA=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json headRefOid --jq .headRef
 TS=$(date -u +'%Y-%m-%d %H:%M UTC')
 if [ -n "$HEAD_SHA" ]; then
   printf '\n_Updated for commit %s at %s_\n' "${HEAD_SHA:0:7}" "$TS" >> "$REVIEW_FILE"
+fi
+
+# Hidden state block (incremental review, item G): embed as the LAST line so
+# gather.sh can read back what SHA/patch-id this comment reviewed. Base64
+# avoids `-->` and quoting issues; the JSON schema is versioned.
+PATCH_ID=""
+[ -f "$SCRATCH/patch-id" ] && PATCH_ID=$(cat "$SCRATCH/patch-id" 2>/dev/null || echo '')
+if [ -n "$HEAD_SHA" ]; then
+  STATE_JSON=$(printf '{"v":1,"last_sha":"%s","patch_id":"%s"}' "$HEAD_SHA" "$PATCH_ID")
+  STATE_B64=$(printf '%s' "$STATE_JSON" | base64 | tr -d '\n')
+  printf '\n<!-- openreview:state %s -->\n' "$STATE_B64" >> "$REVIEW_FILE"
 fi
 
 # Truncate deterministically — the API 422s past 65,536 chars; budget 60k.

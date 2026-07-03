@@ -105,6 +105,20 @@ inline review threads tagged `[OPEN]`/`[RESOLVED]` plus general comments — so 
 reviewer defers to humans and never repeats or re-raises a point. **The LLM
 passes read only those files — they never receive a GitHub token.**
 
+### Incremental review
+
+The posted comment embeds a hidden state block (the reviewed commit SHA and a
+`git patch-id` of the diff) as its last line. On the next run:
+
+- If the diff hasn't changed (same patch-id — e.g. re-triggering a review with
+  no new commits), the run skips the LLM passes and posting entirely.
+- Otherwise, if the previously reviewed commit is still an ancestor of the new
+  head, an additional incremental diff (changes since that commit) is handed to
+  the generate pass as extra focus context — the full diff is still reviewed,
+  this only helps the model prioritize.
+- A force-push or rebase that makes the previous commit unreachable falls back
+  silently to a full review.
+
 ## Authentication & models
 
 The action delegates credential resolution to opencode. All of these work:

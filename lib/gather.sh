@@ -12,6 +12,7 @@ set -euo pipefail
 : "${OR_REPO:?OR_REPO required}"
 : "${OR_PR:?OR_PR required}"
 : "${SCRATCH:?SCRATCH required}"
+OR_DIR="${OR_DIR:-$PWD}"
 # Exported so jq can read it via env.MARKER_MATCH — never string-interpolate a
 # possibly-quote-bearing value into the jq filter.
 export MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
@@ -24,7 +25,84 @@ DIFF_MAX_LINES="${OPENREVIEW_DIFF_MAX_LINES:-4000}"
 # Guard against a non-numeric input crashing the `-gt` test under set -e.
 case "$DIFF_MAX_LINES" in ""|*[!0-9]*) DIFF_MAX_LINES=4000 ;; esac
 
-gh pr view "$OR_PR" --repo "$OR_REPO" --json title,body,files > "$SCRATCH/pr-meta.json"
+gh pr view "$OR_PR" --repo "$OR_REPO" --json title,body,files,baseRefOid,headRefOid > "$SCRATCH/pr-meta.json"
+
+# --- Incremental review (item G): patch-id + previous-state read -------------
+# Most recent prior review comment (matched by the marker substring, any
+# author) — also fetched here (rather than only later for prev-review.md) so
+# its hidden state block can gate the rest of this run.
+BASE_SHA=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json baseRefOid --jq .baseRefOid 2>/dev/null || echo '')
+HEAD_SHA=$(git -C "$OR_DIR" rev-parse HEAD 2>/dev/null || echo '')
+
+PREV_COMMENT_RAW="$SCRATCH/.prev-comment-raw.md"
+gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
+  --jq '[.[] | select(.body | contains(env.MARKER_MATCH))] | (.[-1].body // "")' \
+  > "$PREV_COMMENT_RAW" 2>/dev/null || true
+
+# Parse the hidden state block: `<!-- openreview:state <base64> -->` encoding
+# `{"v":1,"last_sha":"...","patch_id":"..."}`. Tolerate absence/garbage as "no
+# state". Normalize CRLF first (human web edits introduce it).
+LAST_SHA=""
+PREV_PATCH_ID=""
+if [ -s "$PREV_COMMENT_RAW" ]; then
+  STATE_B64=$(tr -d '\r' < "$PREV_COMMENT_RAW" \
+    | grep -oE 'openreview:state [A-Za-z0-9+/=]+' | tail -1 \
+    | sed -E 's/^openreview:state //' || true)
+  if [ -n "$STATE_B64" ]; then
+    STATE_JSON=$(printf '%s' "$STATE_B64" | base64 -d 2>/dev/null || true)
+    if [ -n "$STATE_JSON" ]; then
+      LAST_SHA=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"last_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      PREV_PATCH_ID=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"patch_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    fi
+  fi
+fi
+
+# Current patch-id: stable across offset-shifting rebases, invariant to line
+# numbers/whitespace. Computed from the merge-base so an already-merged base
+# update doesn't spuriously change it.
+if [ -n "$BASE_SHA" ] && git -C "$OR_DIR" cat-file -e "$BASE_SHA" 2>/dev/null; then
+  MERGE_BASE=$(git -C "$OR_DIR" merge-base "$BASE_SHA" HEAD 2>/dev/null || echo '')
+  if [ -n "$MERGE_BASE" ]; then
+    git -C "$OR_DIR" diff "$MERGE_BASE" HEAD 2>/dev/null | git -C "$OR_DIR" patch-id --stable 2>/dev/null | awk '{print $1}' > "$SCRATCH/patch-id" || true
+  fi
+fi
+[ -s "$SCRATCH/patch-id" ] || : > "$SCRATCH/patch-id"
+CURRENT_PATCH_ID=$(cat "$SCRATCH/patch-id" 2>/dev/null || echo '')
+
+# Skip-if-identical: same patch-id as the last reviewed run -> no-op the rest
+# of the pipeline (passes/render/metrics/post all check for this sentinel).
+if [ -n "$PREV_PATCH_ID" ] && [ -n "$CURRENT_PATCH_ID" ] && [ "$PREV_PATCH_ID" = "$CURRENT_PATCH_ID" ]; then
+  echo "SKIP_REVIEW=1" >> "$SCRATCH/metrics.env"
+  echo "::notice::diff unchanged since last review — skipping"
+  : > "$SCRATCH/skip-review"
+  ok "diff unchanged since last review (patch-id $CURRENT_PATCH_ID) — skipping"
+  exit 0
+fi
+
+# Incremental diff: only when the previous SHA is still a reachable ancestor
+# of HEAD (ancestry failure = force-push/rebase -> fall back silently to a
+# full review, no incremental files).
+if [ -n "$LAST_SHA" ] && [ "$LAST_SHA" != "$HEAD_SHA" ] \
+  && git -C "$OR_DIR" cat-file -e "$LAST_SHA" 2>/dev/null \
+  && git -C "$OR_DIR" merge-base --is-ancestor "$LAST_SHA" HEAD 2>/dev/null; then
+  git -C "$OR_DIR" diff "$LAST_SHA..HEAD" > "$SCRATCH/.pr-incremental.raw" 2>/dev/null || true
+  if [ -n "$DIFF_EXCLUDE" ] && [ -s "$SCRATCH/.pr-incremental.raw" ]; then
+    awk -v ex="$DIFF_EXCLUDE" '
+      /^diff --git / {
+        path=$0; sub(/^diff --git a\/.* b\//, "", path)
+        emit = (path ~ ex) ? 0 : 1
+      }
+      emit { print }
+    ' "$SCRATCH/.pr-incremental.raw" > "$SCRATCH/pr-incremental.diff"
+  else
+    cp "$SCRATCH/.pr-incremental.raw" "$SCRATCH/pr-incremental.diff" 2>/dev/null || : > "$SCRATCH/pr-incremental.diff"
+  fi
+  rm -f "$SCRATCH/.pr-incremental.raw"
+  printf 'This PR was previously reviewed at %s. pr-incremental.diff contains only the changes since then — focus your review there; the full diff is still in pr-numbered.diff for context.\n' "$LAST_SHA" > "$SCRATCH/incremental-note.md"
+  info "incremental review: diffing since $LAST_SHA"
+else
+  rm -f "$SCRATCH/pr-incremental.diff" "$SCRATCH/incremental-note.md"
+fi
 
 # Full diff, then drop excluded files (whole `diff --git` blocks). Report what
 # was dropped so coverage is never silently reduced.
@@ -181,10 +259,12 @@ awk '
 
 # Most recent prior review (matched by the marker substring, any author) so the
 # reviewer can stay silent about findings since fixed. Empty on the first run.
-gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
-  --jq '[.[] | select(.body | contains(env.MARKER_MATCH))] | (.[-1].body // "")' \
-  > "$SCRATCH/prev-review.md" 2>/dev/null || true
+# Reuses the comment already fetched above for the state-block parse; strip
+# the hidden state comment itself — it's not review content.
+sed '/<!-- openreview:state /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
+  || : > "$SCRATCH/prev-review.md"
 [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
+rm -f "$PREV_COMMENT_RAW"
 
 # --- Richer context: intent + existing discussion ----------------------------
 # All of this is best-effort; a failure here must never abort the review.
