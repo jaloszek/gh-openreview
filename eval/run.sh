@@ -179,6 +179,18 @@ check_expectations() {
   fi
 }
 
+# warn_once_no_tree <fixture> — warn that a fixture has no tree/ (agentic file
+# reads will see an empty project), but only once per fixture per run.py
+# invocation, no matter how many repetitions (EVAL_RUNS) it has.
+NO_TREE_WARNED=""
+warn_once_no_tree() {
+  case " $NO_TREE_WARNED " in
+    *" $1 "*) return 0 ;;
+  esac
+  NO_TREE_WARNED="$NO_TREE_WARNED $1"
+  warn "[$1] no tree/ — agentic file reads will see an empty project"
+}
+
 # --- one fixture --------------------------------------------------------------
 
 run_fixture() {
@@ -208,7 +220,16 @@ run_fixture() {
     rdir="$fdir/run$run"
     scratch="$rdir/.openreview-tmp"
     mkdir -p "$scratch"
-    cp "$fixdir"/* "$scratch/"
+    find "$fixdir" -maxdepth 1 -type f -exec cp {} "$scratch/" \;
+    # tree/ is the post-PR checkout of the invented project: copy it into the
+    # run dir ROOT (the project dir opencode sees) so the model's file reads
+    # land on real source, not an empty project. Scratch context files above
+    # still go to .openreview-tmp/ regardless.
+    if [ -d "$fixdir/tree" ]; then
+      cp -R "$fixdir/tree/." "$rdir/"
+    else
+      warn_once_no_tree "$name"
+    fi
     # opencode scopes its read/write sandbox to the enclosing project (git)
     # root. Make each run dir its own root so the model's relative $S/ paths
     # resolve against the copied fixture, not this repository.
