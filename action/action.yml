@@ -14,6 +14,10 @@ inputs:
     description: "Path to an opencode.json to use. Optional — falls back to the consumer repo's config, then the bundled free-model config."
     required: false
     default: ""
+  trust-repo-config:
+    description: "When true, a resolved consumer/user opencode.json is used verbatim (pre-TASK-29 behavior) instead of being merged with the bundled hardened tools/permission maps. Default false: the resolved config is merged with the bundled tools/permission maps forced wholesale and any mcp key dropped, so a consumer config can no longer silently weaken the sandbox."
+    required: false
+    default: "false"
   model:
     description: "opencode model id for the analysis (generate) pass."
     required: false
@@ -286,6 +290,7 @@ runs:
       env:
         OPENCODE_API_KEY: ${{ inputs.opencode-api-key }}
         OPENCODE_CONFIG: ${{ inputs.opencode-config }}
+        OPENREVIEW_TRUST_REPO_CONFIG: ${{ inputs.trust-repo-config }}
       run: ${{ github.action_path }}/../lib/passes.sh
 
     # Deterministic render — no model call, no token. Builds the final comment

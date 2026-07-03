@@ -23,6 +23,17 @@ that hard, in layers:
    outbound network calls — even if a PR plants a prompt-injection payload in a
    tracked file.
 
+   A repo/user `opencode.json` can no longer silently weaken this layer: by
+   default the engine resolves the consumer/user config as before, then
+   **merges** it with the bundled config, forcing the `tools` and `permission`
+   maps wholesale (a consumer cannot re-enable bash etc. piecemeal via a
+   partial override) and dropping any `mcp` key (MCP servers can add tools).
+   Everything else in the consumer config (provider, model, agent, theme…)
+   still applies. Set `trust-repo-config: true` on the action to opt out and
+   use the resolved config verbatim — only do this for repos you fully trust,
+   and keep its `tools`/`permission` at least as strict as the bundled
+   defaults.
+
 2. **The LLM step holds no GitHub token.** PR context is pre-fetched by separate,
    token-scoped steps. The step that runs the model is given only the LLM
    credential, never `GITHUB_TOKEN`.
