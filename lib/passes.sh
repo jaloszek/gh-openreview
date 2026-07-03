@@ -105,6 +105,7 @@ Severity — calibrate to CORRECTNESS, not taste:
 Rules that cut noise:
 - Every finding MUST cite a concrete file:line that appears in pr.diff. If you cannot, do not report it.
 - Prefer correctness bugs. Do NOT report formatting preferences or 'missing tests' as important.
+- NEVER report any of the following, regardless of severity: pre-existing issues not introduced by this diff; formatting/style preferences; purely speculative problems ('could potentially', 'might in theory') without a concrete failure path; anything a standard linter or compiler would catch; generic security advice not tied to a specific flaw in this diff; suggestions to add docstrings, comments, or type hints; suggestions to remove unused imports; advice to 'verify' or 'ensure' something without evidence it is wrong; claims about symbols defined outside this diff that you have not opened and read. If you are not certain an issue is real, do not flag it.
 
 $FORMAT_SPEC
 
@@ -136,6 +137,7 @@ For EACH @@FINDING, KEEP it only if ALL hold:
 2. the claim is factually correct about that code (verify it, do not infer from names),
 3. you would genuinely raise it in a serious review (not speculative, not pure style).
 DROP everything else. Recalibrate severity conservatively — when unsure, 'nit' rather than 'important'.
+4. DROP any finding that falls into these categories even if it seems valid: docstring/comment/type-hint suggestions; unused-import removal; 'verify/ensure that…' advice without demonstrated incorrectness; pure style/formatting; findings about code outside pr.diff; findings whose suggested fix does not change behavior.
 
 $FORMAT_SPEC
 
