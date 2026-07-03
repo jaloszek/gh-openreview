@@ -878,6 +878,108 @@ failure**. All fixtures' numbers are potentially tainted the same way.
 - `shellcheck -S warning eval/*.sh` clean.
 - Quiet live re-run evidence (or explicit note that creds were absent).
 
+## TASK-26 — Prompt experiment: omission-bug hint (eval-gated)
+
+**Files:** `prompts/generate.txt` only.
+**Motivation:** the corrected eval baseline shows the reviewer's weakest
+class is **omission bugs** — problems that are the *absence* of code: B05
+(playground: bare-except swallow never caught), C01 (noisy: buffer-full
+event silently dropped with no log). There is no wrong line to point at, so
+diff-scanning misses them.
+
+**Spec:** This is an EXPERIMENT, not a feature. Protocol:
+1. **Before:** on the unmodified branch, run
+   `EVAL_RUNS=3 OPENREVIEW_MODEL=opencode/deepseek-v4-flash-free bash eval/run.sh playground noisy`
+   and `bash eval/run.sh quiet clean` (k=1); record per-bug m/k for
+   B05/C01 and quiet/clean status.
+2. **Change:** add ONE short paragraph to `prompts/generate.txt` (after the
+   issue-classes list), e.g.: "Many real bugs are OMISSIONS — the code that
+   is NOT there: error handling removed or never added, silent drops with
+   no log line, a case forgotten after adding an enum/config entry. For
+   each changed function, ask what should happen on failure / full / empty
+   / unexpected input, and verify the code actually does it. An omission
+   finding must still cite the file:line where the missing handling
+   belongs." Keep it tight; do not weaken the existing kill-list.
+3. **After:** repeat the exact same runs.
+4. **Accept** iff: (a) B05 or C01 found in ≥1/3 runs where before it was
+   0/3, (b) quiet stays 0 importants and ≤2 nits, (c) clean stays clean,
+   (d) playground recall (union) not lower than before. Otherwise iterate
+   the wording ONCE more; if still failing, revert and report failed with
+   both scorecards.
+5. Commit only on acceptance, with before/after numbers in the commit body.
+
+**Acceptance criteria:** the protocol above, with both scorecards quoted in
+the summary. `shellcheck` untouched (no shell changes).
+
+## TASK-27 — Prompt experiment: language-idiom hint (eval-gated)
+
+**Files:** `prompts/generate.txt` only. **Run AFTER TASK-26** (its accepted
+prompt is the new baseline).
+**Motivation:** kotlin fixture recall is stuck at 4/8 across runs; the
+stable misses are Kotlin-idiom bugs: `===` vs `==` (K03), integer division
+on money (K05), dropped `runCatching` result (K06).
+
+**Spec:** Same experiment protocol as TASK-26:
+1. **Before:** `EVAL_RUNS=3 … bash eval/run.sh kotlin` + `quiet clean`
+   (k=1) on the current branch state; record per-bug m/k.
+2. **Change:** ONE short paragraph in `prompts/generate.txt`, e.g.: "Check
+   language-specific semantic traps for the file's language — e.g. in
+   Kotlin/Java-like languages: reference vs structural equality, integer
+   division where fractions matter (money!), non-exhaustive when/switch
+   after an enum gains a case, error-wrapping results whose failure branch
+   is silently dropped, nullability assertions (!!) on legitimately-absent
+   values. Report these only when the concrete code path is wrong — not as
+   generic advice (the do-not-flag rules still apply)." The linter-caveat
+   sentence is REQUIRED — this must not reopen the kill-list.
+3. **After:** same runs. **Accept** iff kotlin union recall ≥ 6/8 OR at
+   least two of K03/K05/K06 newly found, AND quiet/clean budgets hold, AND
+   playground is spot-checked once (k=1) with recall not collapsing.
+   Iterate wording once; else revert + report failed with scorecards.
+4. Commit only on acceptance, before/after in the commit body.
+
+## TASK-28 — Cheap-model per-file triage (plan item T; eval-gated)
+
+**Files:** `lib/passes.sh`, `prompts/triage.txt` (new), `lib/metrics.sh`,
+`README.md`. **Run AFTER TASK-26/27.**
+**Design (decided):** the original-CodeRabbit pattern, fitted to our
+pipeline. Only active when a cheap model is configured AND the diff is big
+enough to be worth the extra call.
+
+**Spec:**
+1. New pass 0.5 (after the intent prep, before generate), only when
+   `resolve_cheap_model` yields a model AND `pr-numbered.diff` exceeds
+   `OPENREVIEW_TRIAGE_MIN_LINES` (default 400): the cheap model reads
+   `$S/pr-numbered.diff` and writes `$S/triage.md` — one line per changed
+   file: `path<TAB>NEEDS_REVIEW|TRIVIAL<TAB>one-line summary of the
+   change`. Prompt (new `prompts/triage.txt`): TRIVIAL means
+   rename/move/formatting/comment-only/generated-mechanical churn with no
+   behavior change; **"when in doubt, NEEDS_REVIEW"**; never mark TRIVIAL a
+   file whose diff touches logic, error handling, or security surface.
+2. `passes.sh` then builds `$S/pr-review.diff` for pass 1: drop the
+   file sections of TRIVIAL files from `pr-numbered.diff` (reuse the awk
+   file-block filter pattern from gather's exclude logic), and appends a
+   `## Files triaged as trivial (not shown)` name list. Inject the per-file
+   summaries block as extra pass-1 context ("what each file changes" — the
+   Qodo AI-metadata pattern). Pass 1 reads `pr-review.diff` instead of
+   `pr-numbered.diff`; verify still checks locs against the ORIGINAL
+   numbered diff (anchor validation is unchanged — commentable lines come
+   from gather).
+3. Fail-open: triage pass error, unparseable output, or 0 NEEDS_REVIEW
+   files ⇒ warn and run pass 1 on the full `pr-numbered.diff` exactly as
+   today. A malformed triage line ⇒ treat that file as NEEDS_REVIEW.
+4. Metrics: `FILES_TRIAGED_TRIVIAL` count into `metrics.env` + step
+   summary. README: document the input/env and the fail-open rule.
+5. **Eval gate:** with `OPENREVIEW_CHEAP_MODEL=opencode/deepseek-v4-flash-free`
+   exported (and TRIAGE_MIN_LINES=0 to force triage on):
+   `EVAL_RUNS=1 … bash eval/run.sh` full suite — accept iff every scored
+   fixture's union recall is no lower than the same-day non-triage run,
+   clean/quiet budgets hold, and on `noisy` at least 2 files are triaged
+   TRIVIAL (it contains real churn). Report both scorecards.
+
+**Acceptance criteria:** the eval gate above; `shellcheck -S warning
+lib/*.sh` clean; `--selftest` unaffected; fail-open path demonstrated with
+a canned garbage `triage.md`.
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
@@ -885,8 +987,10 @@ failure**. All fixtures' numbers are potentially tainted the same way.
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
   measurable — spec after the eval suite (TASK-19/20/21) merges.
 - **Part 3 remainder (harvest cron, warmup skills, knowledge picker)** —
-  epic-level design decided; detailed specs after TASK-24 ships and an org
-  App exists to test against.
+  **ON HOLD (user decision 2026-07-03):** the GitHub App / org rollout is
+  deferred to a separate initiative and session. TASK-24's dispatch
+  workflow is merged but dormant until an App is registered; do not build
+  further on it for now.
 - **V/U/W/N/O/L′, Tier 4 (Y/Z/AA)** — design open or eval-dependent.
 - ~~AG (named-agents refactor)~~ — dropped in favor of TASK-23 (see its
   header for rationale).
