@@ -120,6 +120,14 @@ OWNER="${OR_REPO%%/*}"; REPO="${OR_REPO##*/}"
 } > "$SCRATCH/pr-comments.md" 2>/dev/null || true
 [ -s "$SCRATCH/pr-comments.md" ] || echo "(no discussion yet)" > "$SCRATCH/pr-comments.md"
 
+# Strip invisible-Unicode smuggling vectors from every fetched text context
+# file before the model sees it (pr-meta.json values are left alone).
+sanitize_text "$SCRATCH/pr.diff"
+sanitize_text "$SCRATCH/linked-issues.md"
+sanitize_text "$SCRATCH/pr-commits.md"
+sanitize_text "$SCRATCH/pr-comments.md"
+sanitize_text "$SCRATCH/prev-review.md"
+
 DIFF_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
 echo "DIFF_LINES=$DIFF_LINES" >> "$SCRATCH/metrics.env"
 info "context: $DIFF_LINES diff lines, $(wc -l < "$SCRATCH/prev-review.md" | tr -d ' ') prev-review lines"

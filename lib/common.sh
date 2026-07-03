@@ -24,6 +24,35 @@ die()  { printf '%serror:%s %s\n' "$_c_red" "$_c_off" "$*" >&2; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
+# --- ingress sanitization -----------------------------------------------------
+# sanitize_text <file>: strip invisible-Unicode smuggling vectors in place —
+# tag block (U+E0000-E007F), zero-width (U+200B-200D, U+FEFF), bidi controls
+# (U+202A-202E, Trojan Source; U+2066-2069), variation selectors
+# (U+FE00-FE0F, U+E0100-E01EF). Detects on codepoints, not rendered glyphs.
+# Never silent: a non-zero strip count warns + emits a `::notice::`. Requires
+# perl (present on ubuntu runners and macOS); missing perl warns and skips
+# rather than failing the run.
+sanitize_text() {
+  local f="$1" count cf
+  [ -f "$f" ] || return 0
+  if ! command -v perl >/dev/null 2>&1; then
+    warn "perl not found; skipping invisible-Unicode sanitization for $f"
+    return 0
+  fi
+  cf=$(mktemp)
+  perl -i -CSD -pe '
+    $c += s/[\x{E0000}-\x{E007F}\x{200B}-\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FE00}-\x{FE0F}\x{E0100}-\x{E01EF}]//g;
+    END { print STDERR $c }
+  ' "$f" 2>"$cf"
+  count=$(cat "$cf" 2>/dev/null)
+  rm -f "$cf"
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  if [ "$count" -gt 0 ]; then
+    warn "sanitize: stripped $count invisible/control character(s) from $f"
+    echo "::notice::openreview stripped $count invisible Unicode character(s) from $(basename "$f")"
+  fi
+}
+
 # --- model resolution --------------------------------------------------------
 # Precedence: OPENREVIEW_MODEL > OC_MODEL > a pre-exported OR_MODEL > bundled
 # free model. The action feeds the `model` input through OPENREVIEW_MODEL.
