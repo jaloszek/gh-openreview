@@ -1037,6 +1037,99 @@ The TASK-12 warning fires but nothing enforces.
 - No jq/python3 ⇒ bundled config + warn. `shellcheck` + `actionlint`
   clean; eval `--selftest` unaffected.
 
+## TASK-30 — Open-PR cross-context (concurrent-change awareness)
+
+**Files:** `lib/gather.sh`, `lib/passes.sh` (context list), `README.md`.
+
+**Spec:** During gather (token-scoped), fetch the repo's other OPEN PRs:
+`gh pr list --state open --json number,title,headRefName,files --limit 30`
+(exclude the PR under review). Deterministically compute file overlap with
+the current PR's changed files. When ≥1 overlapping PR exists, write
+`$SCRATCH/open-prs.md`: one line per overlapping PR (max 5, most-overlap
+first): `#N "<title>" also touches: <shared files (max 4)>`. Run it through
+`sanitize_text`. `passes.sh`: include in the pass-1 context list only when
+the file exists, with the instruction: "Other OPEN PRs touch the same
+files — consider conflicting or duplicated work, and whether this PR
+depends on or races them. Mention only when concretely relevant."
+**Absent-silent:** no open PRs / no overlap / API error ⇒ no file, no
+prompt line, no warnings beyond a debug `info`. Best-effort (`|| true`).
+
+**Acceptance:** canned test of the overlap logic (feed a fake `gh` JSON via
+a function stub or fixture file through the parsing/overlap code); eval
+fixtures unaffected (no gather in eval); `shellcheck` clean; README one-liner.
+
+## TASK-31 — Regression radar (recent-fix overlap)
+
+**Files:** `lib/gather.sh`, `lib/passes.sh` (context list), `README.md`.
+
+**Spec:** In gather, for the PR's changed files (from `pr-meta.json`,
+cap 20 files): `git log --since='120 days ago' -i -E
+--grep='fix|bug|regress' --format='%h %s' -- <file>` (max 3 commits per
+file, dedup across files). When any exist, write
+`$SCRATCH/regression-context.md`: `path — <sha> <subject>` lines under a
+one-line header. Prompt instruction (pass 1): "These files were recently
+bug-fixed. Verify this PR does not undo or bypass those fixes — regressions
+of recent fixes are the most important finding class." Absent-silent;
+requires the `fetch-depth: 0` checkout (degrade silently on shallow
+history: `git rev-parse --is-shallow-repository` ⇒ skip).
+
+**Acceptance:** a scripted temp git repo with a seeded `fix:` commit
+history demonstrates the output file and its absence on a no-fix history
+and on a shallow clone; `shellcheck` clean; eval `--selftest` unaffected.
+
+## TASK-32 — Co-change coupling (forgotten-file detector)
+
+**Files:** `lib/gather.sh`, `lib/passes.sh` (context list), `README.md`.
+
+**Spec:** In gather (skip when shallow): mine the last 500 commits
+(`git log --name-only --format='@%h' -500`) with awk to count, for each of
+the PR's changed files, its historical co-change partners. For partners
+with co-rate ≥ 0.6 (co-occurrences / changed-file occurrences) AND ≥5
+co-occurrences that are NOT touched by this PR, write
+`$SCRATCH/co-change.md`: `<changed file> usually changes together with
+<partner> (NN% of MM commits) — not touched by this PR`. Cap 8 lines.
+Prompt instruction: "Historically coupled files were not updated — check
+whether this PR forgot a required companion change (migration, test,
+config, docs). Only flag when the omission is plausible from the diff."
+Merge/bot commits excluded (`--no-merges`). Absent-silent everywhere.
+
+**Acceptance:** scripted temp repo with a synthetic coupled-pair history
+(A+B together 8/10, PR touches only A) produces the expected line; touching
+both produces nothing; thresholds respected; awk is Bash-3.2-safe (no
+assoc arrays in *bash* — awk arrays are fine); `shellcheck` clean.
+
+## TASK-33 — Live playground PR (staging + docs)
+
+**Files:** new `eval/live-src/` (staging), `eval/README.md` (new section),
+`docs/tasks.md` untouched otherwise.
+**Context:** the restart flag (`restart: true` input / `@openreview
+restart` trusted comment) is merged — it forces a fresh, stateless review
+while editing the same sticky comment. What's missing is the permanently
+open PR to point it at.
+
+**Spec:**
+1. `eval/live-src/`: a small self-contained Python mini-project variant
+   (reuse the `metrix` style, DIFFERENT bugs than the frozen fixtures so
+   cross-contamination with offline scores is detectable): base version in
+   `eval/live-src/base/`, PR version in `eval/live-src/head/` with **8
+   seeded bugs** across the taxonomy, documented in
+   `eval/live-src/BUGS.md` (id, file, line, description — the answer key).
+2. `eval/README.md` — "Live playground PR" section: how the maintainer
+   creates it (script the steps as copy-paste commands):
+   `git checkout -b eval/live-playground main && cp base files, commit,
+   cp head files, commit, push, open DRAFT PR labeled do-not-merge`;
+   how to get a fresh review each time (re-run the workflow with
+   `restart: true`, or comment `@openreview restart`); what it exercises
+   that offline fixtures cannot (gather, post, edit-in-place, state block,
+   skip/incremental behavior, real token scoping).
+3. Do NOT create the branch/PR yourself — the maintainer does (it must
+   stay open indefinitely; flag it in your summary).
+
+**Acceptance:** base/head differ by exactly the 8 documented bugs (show a
+diffstat + per-bug grep evidence); BUGS.md lines match real head lines;
+README section complete; no lint impact (`shellcheck` untouched by Python
+files); eval `--selftest` unaffected.
+
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
