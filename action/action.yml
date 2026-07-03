@@ -70,6 +70,10 @@ inputs:
     description: "`summary` (default) posts only the sticky summary comment. `both` additionally posts a COMMENT-event review with inline comments for anchored important findings; the summary comment always carries every finding regardless of this setting (inline posting is best-effort/fallback-by-design)."
     required: false
     default: "summary"
+  restart:
+    description: "Force a full fresh review, ignoring previous state: no skip guard, no incremental diff, prev-review.md reset to the placeholder. Also settable per-run via a `@openreview restart` comment (the trigger phrase followed by the word `restart`)."
+    required: false
+    default: "false"
 
 outputs:
   findings-total:
@@ -110,8 +114,10 @@ runs:
         LABEL_NAME: ${{ github.event.label.name }}
         TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
         TRIGGER_LABEL: ${{ inputs.trigger-label }}
+        RESTART_INPUT: ${{ inputs.restart }}
       run: |
         run=false; pr=""
+        case "$RESTART_INPUT" in 1|true|TRUE|True) restart=true ;; *) restart=false ;; esac
         is_trusted() { case "$1" in OWNER|MEMBER|COLLABORATOR) return 0 ;; *) return 1 ;; esac; }
         case "$EVENT" in
           pull_request|pull_request_target)
@@ -125,6 +131,11 @@ runs:
             if [ -n "$IS_PR_URL" ] && printf '%s' "$COMMENT_BODY" | grep -qE "(^|[[:space:]])${escaped_phrase}([[:space:][:punct:]]|$)"; then
               if is_trusted "$COMMENT_ASSOC"; then
                 run=true; pr="$PR_ISSUE"
+                # Comment-trigger convenience: "@openreview restart" forces a
+                # full review for this run, on top of the `restart` input.
+                if printf '%s' "$COMMENT_BODY" | grep -qE "(^|[[:space:]])${escaped_phrase}[[:space:]]+restart([[:space:][:punct:]]|$)"; then
+                  restart=true
+                fi
               else
                 echo "::notice::ignoring $TRIGGER_PHRASE from untrusted author (association: ${COMMENT_ASSOC:-none})"
               fi
@@ -133,8 +144,9 @@ runs:
         {
           echo "should_run=$run"
           echo "pr=$pr"
+          echo "restart=$restart"
         } >> "$GITHUB_OUTPUT"
-        echo "event=$EVENT action=${ACTION:-} should_run=$run pr=$pr"
+        echo "event=$EVENT action=${ACTION:-} should_run=$run pr=$pr restart=$restart"
 
     # Check out the PR HEAD. For issue_comment/labeled events GITHUB_SHA points
     # at the base branch, so refs/pull/<n>/head is required.
@@ -193,10 +205,12 @@ runs:
         DIFF_MAX_LINES: ${{ inputs.diff-max-lines }}
         MARKER: ${{ inputs.marker-header }}
         BOT: ${{ inputs.bot-login }}
+        RESTART: ${{ steps.ctx.outputs.restart }}
       run: |
         {
           echo "OR_REPO=${{ github.repository }}"
           echo "OR_PR=${{ steps.ctx.outputs.pr }}"
+          echo "OPENREVIEW_RESTART=$RESTART"
           # Feed the model through OPENREVIEW_MODEL — the engine's resolve_model()
           # recomputes OR_MODEL from (--model flag > OPENREVIEW_MODEL > OC_MODEL >
           # default), so setting OR_MODEL directly here was silently overwritten

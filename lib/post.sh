@@ -39,8 +39,10 @@ fi
 # avoids `-->` and quoting issues; the JSON schema is versioned.
 PATCH_ID=""
 [ -f "$SCRATCH/patch-id" ] && PATCH_ID=$(cat "$SCRATCH/patch-id" 2>/dev/null || echo '')
+ENGINE_FP=""
+[ -f "$SCRATCH/engine-fp" ] && ENGINE_FP=$(cat "$SCRATCH/engine-fp" 2>/dev/null || echo '')
 if [ -n "$HEAD_SHA" ]; then
-  STATE_JSON=$(printf '{"v":1,"last_sha":"%s","patch_id":"%s"}' "$HEAD_SHA" "$PATCH_ID")
+  STATE_JSON=$(printf '{"v":1,"last_sha":"%s","patch_id":"%s","fp":"%s"}' "$HEAD_SHA" "$PATCH_ID" "$ENGINE_FP")
   STATE_B64=$(printf '%s' "$STATE_JSON" | base64 | tr -d '\n')
   printf '\n<!-- openreview:state %s -->\n' "$STATE_B64" >> "$REVIEW_FILE"
 fi
