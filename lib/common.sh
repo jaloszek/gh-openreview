@@ -27,8 +27,12 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found:
 # --- ingress sanitization -----------------------------------------------------
 # sanitize_text <file>: strip invisible-Unicode smuggling vectors in place —
 # tag block (U+E0000-E007F), zero-width (U+200B-200D, U+FEFF), bidi controls
-# (U+202A-202E, Trojan Source; U+2066-2069), variation selectors
-# (U+FE00-FE0F, U+E0100-E01EF). Detects on codepoints, not rendered glyphs.
+# (U+202A-202E, Trojan Source; U+2066-2069), and the variation-selector
+# SUPPLEMENT (U+E0100-E01EF). The BMP variation selectors (U+FE00-FE0F) are
+# deliberately NOT stripped: U+FE0F/U+FE0E are ubiquitous in legitimate emoji
+# text (observed: 16 strips on a real news-content diff) and their smuggling
+# value is negligible next to the ranges above — stripping them silently
+# alters the content under review. Detects on codepoints, not glyphs.
 # Never silent: a non-zero strip count warns + emits a `::notice::`. Requires
 # perl (present on ubuntu runners and macOS); missing perl warns and skips
 # rather than failing the run.
@@ -41,7 +45,7 @@ sanitize_text() {
   fi
   cf=$(mktemp)
   perl -i -CSD -pe '
-    $c += s/[\x{E0000}-\x{E007F}\x{200B}-\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FE00}-\x{FE0F}\x{E0100}-\x{E01EF}]//g;
+    $c += s/[\x{E0000}-\x{E007F}\x{200B}-\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{E0100}-\x{E01EF}]//g;
     END { print STDERR $c }
   ' "$f" 2>"$cf"
   count=$(cat "$cf" 2>/dev/null)
