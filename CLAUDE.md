@@ -68,6 +68,13 @@ Two opencode passes writing intermediate files into `$SCRATCH`:
 There is **no LLM format pass** — `render.sh` parses the verified findings and
 builds `opencode-review.md` deterministically (free, fixed output shape).
 
+The static prompt text (persona/rules/DROP-criteria blocks, the shared
+FORMAT_SPEC) lives in versioned files under `prompts/`, cat'd and concatenated
+by `passes.sh`; only the dynamic parts (context file lists, incremental note,
+anything embedding `$S`) stay assembled inline. `engine_fingerprint` hashes
+`prompts/*.txt` alongside `passes.sh`, so a prompt edit invalidates the skip
+guard exactly like a code change.
+
 Both passes emit a strict record format that `render.sh` parses:
 
 ```

@@ -80,14 +80,21 @@ resolve_verify_model() {
 
 # --- engine fingerprint (restart / skip-guard invalidation) ------------------
 # engine_fingerprint: short stable hash over what actually changes review
-# behavior without changing the diff — lib/passes.sh contents plus the
+# behavior without changing the diff — lib/passes.sh contents, every prompt
+# file under prompts/ (versioned prompt text passes.sh cats in), plus the
 # resolved main/verify model names. cksum-based (POSIX, Bash 3.2-safe, no
 # external hash dependency beyond cksum which ships everywhere). Callers must
 # resolve_model/resolve_verify_model first so OR_MODEL/OR_VERIFY_MODEL reflect
 # the run's actual config.
 engine_fingerprint() {
-  local passes_file="$OPENREVIEW_LIB/passes.sh" content=""
+  local passes_file="$OPENREVIEW_LIB/passes.sh" content="" prompts_dir="$OPENREVIEW_ROOT/prompts" f
   [ -f "$passes_file" ] && content=$(cat "$passes_file")
+  if [ -d "$prompts_dir" ]; then
+    for f in $(find "$prompts_dir" -type f | LC_ALL=C sort); do
+      content="$content
+$(cat "$f")"
+    done
+  fi
   { printf '%s\n' "$content"; printf 'model:%s\n' "${OR_MODEL:-}"; printf 'verify:%s\n' "${OR_VERIFY_MODEL:-}"; } \
     | cksum | awk '{print $1}'
 }

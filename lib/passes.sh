@@ -15,6 +15,22 @@ resolve_verify_model
 prepare_opencode_config "$OR_DIR"
 S="$SCRATCH_REL"   # scratch path as the model sees it (relative to OR_DIR)
 
+# Static prompt text lives in versioned files under prompts/ (reviewable,
+# diffable independent of this script). Only the dynamic parts — context file
+# lists, the incremental note, and anything embedding $S — stay assembled
+# here. engine_fingerprint (common.sh) hashes these files too, so an edit
+# here invalidates the skip guard exactly like a passes.sh edit.
+PROMPTS_DIR="${OPENREVIEW_PROMPTS_DIR:-$OPENREVIEW_ROOT/prompts}"
+load_prompt() {
+  local f="$PROMPTS_DIR/$1"
+  [ -f "$f" ] || die "missing prompt file: $f"
+  cat "$f"
+}
+PREP_PROMPT="$(load_prompt prep.txt)"
+GENERATE_PROMPT="$(load_prompt generate.txt)"
+VERIFY_PROMPT="$(load_prompt verify.txt)"
+FORMAT_SPEC="$(load_prompt format-spec.txt)"
+
 # Telemetry accumulator (read by metrics.sh -> step summary + action outputs).
 # gather.sh created it (DIFF_LINES); append so we don't clobber that.
 METRICS="$SCRATCH/metrics.env"
@@ -43,10 +59,7 @@ if [ -n "$OR_CHEAP_MODEL" ]; then
 Read $S/linked-issues.md (the issue(s) this PR closes, may say '(no linked issues)'), $S/pr-meta.json (PR title + body), and $S/pr-commits.md (commit messages).
 
 Write a SHORT brief (at most ~8 lines) to $S/intent.md capturing:
-1. What this PR is supposed to accomplish.
-2. Any explicit acceptance criteria or constraints stated in the issue/PR.
-3. What a reviewer should check the diff against.
-Be strictly factual — do NOT invent requirements. If there is no linked issue, infer intent from the title/body/commits. Output ONLY the brief to $S/intent.md. Do not review code, do not post anything." "prep" \
+$PREP_PROMPT Output ONLY the brief to $S/intent.md. Do not review code, do not post anything." "prep" \
     || { warn "prep (intent compression) failed — falling back to raw context"; rm -f "$SCRATCH/intent.md"; }
   echo "PREP_SECS=$((SECONDS - _tp))" >> "$METRICS"
   oc_extract_metrics "$SCRATCH/oc-prep.jsonl" "PREP"
@@ -70,22 +83,6 @@ if [ -f "$SCRATCH/incremental-note.md" ] && [ -s "$SCRATCH/pr-incremental.diff" 
 - $S/pr-incremental.diff — the incremental diff (changes since the previous review); focus your review here."
 fi
 
-# The exact output contract shared by both passes and parsed by render.sh.
-FORMAT_SPEC="Write findings in this EXACT record format and nothing else outside it. One record per finding:
-@@FINDING
-sev: important   (use 'important' for a bug introduced by this PR; 'nit' for minor/non-blocking)
-loc: path/to/file.ext:123   (a file:line that appears in pr.diff)
-conf: high   (high | med | low)
-title: one short line
-body: one to three sentences on a SINGLE line — the reason grounded in the diff, plus a concrete suggested fix.
-Repeat @@FINDING blocks for each finding. If there are NO findings, write no @@FINDING blocks at all.
-Then ALWAYS end the file with exactly:
-@@PRDESC
-rating: good | could-be-improved | poor
-reason: one short line explaining the rating (omit this line when rating is good)
-
-Rate the PR description (from pr-meta.json) against what the diff actually does. 'poor' = the PR description is empty, extremely outdated, or contradicts what the diff actually does. 'could-be-improved' = major gaps but acceptable to merge as-is. 'good' = everything else. Do NOT write a replacement description — rating + reason only."
-
 GENERATE_FAILED=0
 
 # --- PASS 1: GENERATE --------------------------------------------------------
@@ -105,19 +102,7 @@ $INCREMENTAL_CONTEXT
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.
 - CLAUDE.md and anything under conventions/ if present (project root).
 
-Using the previous review: it exists ONLY so you stop repeating yourself. If a problem it raised has since been fixed in the current pr.diff, do NOT mention it — drop it silently. NEVER re-raise a past finding unless you independently confirm it is STILL present in the current diff. Do not treat prev-review.md as a checklist.
-
-Hunt across issue classes: correctness bugs, security, error handling and edge cases, performance, race conditions, test gaps, project-convention violations.
-
-Severity — calibrate to CORRECTNESS, not taste:
-- important — a bug introduced by this PR that would break production, leak/lose data, or open a security hole.
-- nit — minor, non-blocking (style, naming, small cleanup).
-- Pre-existing problems NOT introduced by this PR are OUT OF SCOPE — do not report them.
-
-Rules that cut noise:
-- Every finding MUST cite a concrete file:line that appears in pr.diff. If you cannot, do not report it.
-- Prefer correctness bugs. Do NOT report formatting preferences or 'missing tests' as important.
-- NEVER report any of the following, regardless of severity: pre-existing issues not introduced by this diff; formatting/style preferences; purely speculative problems ('could potentially', 'might in theory') without a concrete failure path; anything a standard linter or compiler would catch; generic security advice not tied to a specific flaw in this diff; suggestions to add docstrings, comments, or type hints; suggestions to remove unused imports; advice to 'verify' or 'ensure' something without evidence it is wrong; claims about symbols defined outside this diff that you have not opened and read. If you are not certain an issue is real, do not flag it.
+$GENERATE_PROMPT
 
 $FORMAT_SPEC
 
@@ -145,12 +130,7 @@ if [ "$HAS_CANDIDATES" = "1" ]; then
 IMPORTANT: your read/write tools are sandboxed to the project directory — use relative paths only, never /tmp.
 Read $S/pr-numbered.diff and $S/review-candidates.md with your read tool. Open changed files for context when a claim needs it. Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself.
 
-For EACH @@FINDING, KEEP it only if ALL hold:
-1. its loc file:line refers to a line actually present in pr.diff,
-2. the claim is factually correct about that code (verify it, do not infer from names),
-3. you would genuinely raise it in a serious review (not speculative, not pure style).
-DROP everything else. Recalibrate severity conservatively — when unsure, 'nit' rather than 'important'.
-4. DROP any finding that falls into these categories even if it seems valid: docstring/comment/type-hint suggestions; unused-import removal; 'verify/ensure that…' advice without demonstrated incorrectness; pure style/formatting; findings about code outside pr.diff; findings whose suggested fix does not change behavior.
+$VERIFY_PROMPT
 
 $FORMAT_SPEC
 
