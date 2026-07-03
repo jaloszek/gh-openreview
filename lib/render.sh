@@ -30,6 +30,28 @@ IN="$SCRATCH/review-verified.md"
 OUT="$SCRATCH/opencode-review.md"
 [ -f "$IN" ] || printf '@@PRDESC\n' > "$IN"
 
+# Egress sanitization: defang model-authored text before it reaches the
+# posted comment (CamoLeak-style exfil via images, mention/ref spam). Only
+# ever applied to files holding model-sourced content (the findings TSV and
+# the PRDESC block), never to our own fixed template text.
+defang_file() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  command -v perl >/dev/null 2>&1 || { warn "perl not found; skipping egress defang for $f"; return 0; }
+  perl -0777 -i -pe '
+    # 1) strip inline HTML that could exfiltrate or execute.
+    s{<(img|picture|script|iframe)\b[^>]*>(?:.*?</\1\s*>)?}{}gis;
+    s{<!--.*?-->}{}gs;
+    # 2) wrap issue/PR refs and mentions in backticks (no notification, no link).
+    s{(?<!`)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+)(?!`)}{`$1`}g;
+    s{(?<!`)(@[A-Za-z0-9-]+(?:/[A-Za-z0-9._-]+)?)(?!`)}{`$1`}g;
+    # 3) markdown images -> removed; markdown links -> text + code-span url.
+    s{!\[([^\]]*)\]\([^)]*\)}{[image removed: $1]}g;
+    s{\[([^\]]*)\]\(([^)]*)\)}{$1 (`$2`)}g;
+  ' "$f"
+  sanitize_text "$f"
+}
+
 # 1) Extract findings to a TSV with a sort key, and the PR-description block to a
 #    separate file. awk is portable (no jq dependency, Bash 3.2 friendly).
 TSV="$SCRATCH/.findings.tsv"
@@ -62,6 +84,16 @@ awk -v prdesc="$PRDESC" '
   END { flush() }
 ' "$IN" | LC_ALL=C sort -t$'\t' -k1,1 -k7,7n > "$TSV"
 [ -f "$PRDESC" ] || : > "$PRDESC"
+
+defang_file "$TSV"
+defang_file "$PRDESC"
+
+# Length-cap the suggested PR description at 4000 chars.
+PRDESC_CAP=4000
+if [ "$(wc -c < "$PRDESC" | tr -d ' ')" -gt "$PRDESC_CAP" ]; then
+  cut -c1-"$PRDESC_CAP" "$PRDESC" > "$PRDESC.trunc" && mv "$PRDESC.trunc" "$PRDESC"
+  printf '\n\n[truncated]\n' >> "$PRDESC"
+fi
 
 # 2) Tallies.
 n_important=$(awk -F'\t' '$2=="important"{c++} END{print c+0}' "$TSV")
