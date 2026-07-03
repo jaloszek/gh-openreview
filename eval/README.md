@@ -176,11 +176,23 @@ Violations print a `✗ expectation failed: ...` line, add
    `pr-commits.md`, `linked-issues.md`, `pr-comments.md`, `prev-review.md`
    (use the placeholder texts gather emits — e.g. `(no linked issues)` — when
    a file has no content).
-2. `bash eval/freeze.sh eval/fixtures/<name>` — regenerates the derived
+2. Add `eval/fixtures/<name>/tree/` — the **post-PR state** of the invented
+   project: every file the diff touches (with the diff applied) plus any
+   module the touched code imports/references, so the checkout looks like a
+   real PR head. `run.sh` copies `tree/` into the run dir root before
+   `lib/passes.sh` runs, so the model's file reads land on real source
+   instead of an empty project (a fixture without `tree/` still runs, but
+   `run.sh` warns once that agentic file reads will see an empty project —
+   this taints any finding that depends on reading beyond the diff).
+3. `bash eval/freeze.sh eval/fixtures/<name>` — regenerates the derived
    `pr-numbered.diff` and `commentable-lines.tsv` from `pr.diff` with the
-   same awk transforms as `lib/gather.sh`. Re-run it whenever `pr.diff`
-   changes.
-3. For a scored fixture, add `eval/golden/<name>.tsv`
+   same awk transforms as `lib/gather.sh`, and checks `tree/` for
+   consistency: for every hunk in `pr.diff`, the added/context (new-side)
+   lines must byte-match the `tree/` copy of that file at the same line
+   offsets. A mismatch fails loudly, printing both the diff's line and the
+   tree's line, so a stale or hand-edited `tree/` file can't silently drift
+   from `pr.diff`. Re-run it whenever `pr.diff` or `tree/` changes.
+4. For a scored fixture, add `eval/golden/<name>.tsv`
    (`id \t file \t line \t category \t sev \t description`). Omit the
    golden file for a clean control.
 
@@ -196,7 +208,9 @@ pre-fix state as a fixture — the fix commit IS the golden finding.
    the bug (or revert the fix on a scratch branch and diff that).
 2. Fill in the context files from the real PR (the local-run recipe in
    `CLAUDE.md` shows a token-scoped `lib/gather.sh` invocation that produces
-   all of them for you).
+   all of them for you). `tree/` = the real PR-head checkout at
+   `<pre-fix-head>`: `git worktree add`/`git archive` that commit and copy the
+   result in, rather than hand-authoring it.
 3. Golden TSV: one row pointing at the line the fix commit changed, with a
    description written from the fix commit message.
 
