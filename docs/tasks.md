@@ -544,6 +544,137 @@ code. One paragraph each, no restructuring.
 **Acceptance criteria:** warning present in both files, factually phrased
 as above; no other content changed.
 
+## TASK-19 — Eval runner: per-fixture expectations (budgets + must-catch)
+
+**Files:** `eval/run.sh`, `eval/README.md` (small updates), selftest assets.
+**Branch note:** eval lives on `feat/eval-harness` — implement there.
+**Context:** `eval/README.md` "Planned fixtures" section explains the three
+review scenarios this enables. The golden TSV can only express "find
+these"; budgets and hard requirements need a second, optional file.
+
+**Spec:**
+1. New optional per-fixture file `eval/golden/<name>.expect` — plain
+   KEY=VALUE lines (bash-parseable with grep/cut, `#` comments allowed):
+   - `MAX_IMPORTANTS=<n>` — rendered important findings above n ⇒ FAIL
+   - `MAX_NITS=<n>` — rendered nits above n ⇒ FAIL
+   - `MAX_TOTAL=<n>` — total rendered findings above n ⇒ FAIL
+   - `MUST_CATCH=<id,id,…>` — golden ids that must be matched (union
+     across runs) by a finding rendered as `important` ⇒ else FAIL
+   - `RUNS_DEFAULT=<k>` — repetitions when the `EVAL_RUNS` env var is not
+     explicitly set (env always wins)
+2. Grading matrix by files present:
+   - golden only → today's behavior (recall/precision, no hard fail).
+   - golden + expect → recall/precision AND budget/must-catch enforcement.
+   - expect only (no golden) → budget-only fixture (e.g. `quiet`): skip
+     recall/precision, enforce budgets.
+   - neither → clean control (today's behavior: any important ⇒ FAIL).
+3. Violations: print a clear `✗ expectation failed: <detail>` line per
+   violation, add rows to `scorecard.tsv`
+   (`<fixture> expect_<key> pass|fail`), and make `run.sh` exit non-zero if
+   any fixture failed expectations (aggregate at the end, don't abort other
+   fixtures).
+4. Extend `--selftest` with canned cases: budget pass, budget fail
+   (too many nits), must-catch hit, must-catch miss, expect-only fixture.
+5. README: replace the "(Implementation note: …runner extension…)"
+   parenthetical with a short "Expectations files" subsection documenting
+   the keys; also correct the noisy-fixture line — the eval does NOT run
+   `gather.sh`, so the compression ladder is NOT exercised here; noisy
+   fixtures must stay within the diff budget.
+
+**Acceptance criteria:**
+- `bash eval/run.sh --selftest` passes with the five new canned cases.
+- A doctored expect file (MAX_NITS=0 against a findings file with a nit)
+  makes the fixture and the overall run exit non-zero with the ✗ line.
+- Existing playground/clean behavior unchanged when no expect file exists.
+- `shellcheck -S warning eval/*.sh` clean.
+
+## TASK-20 — Scenario fixtures: quiet / subtle / noisy
+
+**Files:** `eval/fixtures/{quiet,subtle,noisy}/`, `eval/golden/`.
+**Depends on:** TASK-19 (expect files). **Branch:** `feat/eval-harness`.
+**Human review of planted bugs required before merge — flag it.**
+Design rationale: `eval/README.md` "Planned fixtures" section.
+
+**Spec — build each fixture per the "Adding a fixture" recipe (write
+`pr.diff` + context files, then `bash eval/freeze.sh …`):**
+1. **`quiet/`** — a small real change to the existing `metrix` project
+   shape (e.g. add a `--format json` CLI flag + README blurb, ~60-100 diff
+   lines), containing NO real bugs but salted nit bait: one slightly vague
+   variable name, one magic number, one missing docstring. Context files
+   say it's a routine small feature. NO golden TSV.
+   `quiet.expect`: `MAX_IMPORTANTS=0`, `MAX_NITS=2`.
+2. **`subtle/`** — a small diff (~120-180 lines) that reads as an innocent
+   refactor of 2 files but introduces EXACTLY 3 real bugs at different
+   depths: (a) two assignments reordered creating use-before-set /
+   stale-value read, (b) a boundary condition silently changed while
+   extracting a helper (`<` vs `<=` moved into the helper), (c) an error
+   path dropped while inlining (exception swallowed or early-return lost).
+   PR title/body must sell it as "refactor: extract helpers, no behavior
+   change". Golden TSV with the 3 bugs (`sev: important`).
+   `subtle.expect`: `RUNS_DEFAULT=5` only — no must-catch (subtle misses
+   are signal, not build failures).
+3. **`noisy/`** — a big PR: 10-14 files, ~1800-2500 diff lines (UNDER the
+   4000 default budget — see TASK-19 note), mixing legitimate churn (moved
+   code, renamed modules, config/docs updates) with planted bugs:
+   3 critical (data loss / security / crash-on-common-path; ids C01-C03),
+   4 moderate (ids M01-M04), plus nit bait scattered around. Golden TSV
+   with all 7. `noisy.expect`: `MUST_CATCH=C01,C02,C03`, `MAX_NITS=3`,
+   `MAX_TOTAL=12`.
+   Keep planted bugs >10 lines apart (matcher limitation).
+4. All three reuse/extend the invented Python project style; context files
+   follow the same placeholder conventions as playground.
+
+**Acceptance criteria:**
+- `eval/run.sh --selftest` still passes; `freeze.sh` regenerates derived
+  files cleanly for all three (commit the derived files).
+- Golden line numbers verified present in each fixture's
+  `commentable-lines.tsv`.
+- A dry parse (no LLM): feeding each fixture's canned
+  `review-verified.md`-style sample through the scoring path exercises the
+  expect rules (include one canned sample per fixture under
+  `eval/selftest/`).
+- README fixture list updated (move quiet/subtle/noisy from "planned" to
+  "current", one line each).
+
+## TASK-21 — Kotlin console-app fixture
+
+**Files:** `eval/fixtures/kotlin/`, `eval/golden/kotlin.tsv`.
+**Depends on:** TASK-19. **Branch:** `feat/eval-harness`.
+**Human review of planted bugs required before merge — flag it.**
+
+**Spec:** Multi-language coverage — reviewer behavior differs by language,
+and Kotlin has bug classes Python cannot express. Invent a small, idiomatic
+Kotlin **console app** (a CLI expense tracker: `Main.kt`, `Ledger.kt`,
+`Parser.kt`, `Report.kt`, ~300-400 lines total base) that would plausibly
+compile — correct imports, types, and syntax (reviewed by eye; NO Kotlin
+toolchain is added and nothing is compiled — fixtures are frozen text).
+The PR diff (~250-350 lines, title "feat: add budgets and monthly report")
+plants **8 bugs**, majority Kotlin-specific:
+1. `!!` on a nullable lookup that can legitimately be null (K01, null-edge)
+2. `lateinit var` accessed on a path that can run before init (K02)
+3. structural vs reference equality: `===` used where `==` intended (K03)
+4. `when` over an enum made non-exhaustive by a newly added enum case,
+   no `else` — compiles as statement but silently skips (K04, logic)
+5. integer division in money math: `amount / count` on `Int`s (K05, logic)
+6. `runCatching { … }` whose failure result is dropped (`.getOrNull()`
+   without handling), swallowing a parse error (K06, error-handling)
+7. a `MutableList` shared across coroutines without synchronization
+   (K07, race)
+8. off-by-one: `until` swapped to `..` (or vice versa) in a range over
+   indices (K08, logic/off-by-one)
+Golden TSV with categories mapped to the existing taxonomy; `sev`
+important for all except K03 if placed in a low-impact spot (author's
+call, document it). No expect file (recall fixture, like playground).
+Context files: realistic PR body, 2-3 commit messages, no linked issue.
+
+**Acceptance criteria:**
+- `freeze.sh` output committed; golden lines present in
+  `commentable-lines.tsv`; bugs >10 lines apart.
+- The base app code is coherent Kotlin (types/imports consistent, no
+  pseudo-code) — spot-checkable by a Kotlin reader.
+- README fixture list gains one line for `kotlin/`.
+- `eval/run.sh --selftest` unaffected.
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
