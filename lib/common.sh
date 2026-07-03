@@ -81,13 +81,44 @@ resolve_verify_model() {
 # --- opencode config precedence ----------------------------------------------
 # Respect a user's config; only fall back to the bundled one when none exists.
 #   OPENCODE_CONFIG env > project ./opencode.json(c) > ~/.config/opencode > bundled
+# Warn (log + ::notice::) that config resolution picked <path> instead of the
+# bundled hardened config, and best-effort flag a missing bash deny/false.
+_warn_config_replacement() {
+  local path="$1"
+  local msg="using $path instead of the bundled hardened config — ensure it denies bash/webfetch/websearch and sets external_directory: deny (see SECURITY.md)"
+  warn "$msg"
+  echo "::notice::$msg"
+  if [ -f "$path" ] && command -v grep >/dev/null 2>&1; then
+    if grep -q '"bash"' "$path" 2>/dev/null; then
+      if ! grep -E '"bash"[[:space:]]*:[[:space:]]*(false|"deny")' "$path" >/dev/null 2>&1; then
+        warn "$path mentions \"bash\" but no deny/false setting for it was detected — verify it does not grant bash access"
+      fi
+    else
+      warn "$path has no detectable bash deny/false setting — verify it does not grant bash access"
+    fi
+  fi
+}
+
 prepare_opencode_config() {
   local dir="${1:-$PWD}"
-  if [ -n "${OPENCODE_CONFIG:-}" ]; then return; fi
-  if [ -f "$dir/opencode.json" ] || [ -f "$dir/opencode.jsonc" ]; then return; fi
+  if [ -n "${OPENCODE_CONFIG:-}" ]; then
+    _warn_config_replacement "$OPENCODE_CONFIG"
+    return
+  fi
+  if [ -f "$dir/opencode.json" ]; then
+    _warn_config_replacement "$dir/opencode.json"
+    return
+  fi
+  if [ -f "$dir/opencode.jsonc" ]; then
+    _warn_config_replacement "$dir/opencode.jsonc"
+    return
+  fi
   local g
   for g in "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.jsonc"; do
-    [ -f "$g" ] && return
+    if [ -f "$g" ]; then
+      _warn_config_replacement "$g"
+      return
+    fi
   done
   export OPENCODE_CONFIG="$OPENREVIEW_ROOT/opencode.json"
 }
