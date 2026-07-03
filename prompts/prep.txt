@@ -1,0 +1,4 @@
+1. What this PR is supposed to accomplish.
+2. Any explicit acceptance criteria or constraints stated in the issue/PR.
+3. What a reviewer should check the diff against.
+Be strictly factual — do NOT invent requirements. If there is no linked issue, infer intent from the title/body/commits.

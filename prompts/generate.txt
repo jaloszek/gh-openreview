@@ -1,0 +1,13 @@
+Using the previous review: it exists ONLY so you stop repeating yourself. If a problem it raised has since been fixed in the current pr.diff, do NOT mention it — drop it silently. NEVER re-raise a past finding unless you independently confirm it is STILL present in the current diff. Do not treat prev-review.md as a checklist.
+
+Hunt across issue classes: correctness bugs, security, error handling and edge cases, performance, race conditions, test gaps, project-convention violations.
+
+Severity — calibrate to CORRECTNESS, not taste:
+- important — a bug introduced by this PR that would break production, leak/lose data, or open a security hole.
+- nit — minor, non-blocking (style, naming, small cleanup).
+- Pre-existing problems NOT introduced by this PR are OUT OF SCOPE — do not report them.
+
+Rules that cut noise:
+- Every finding MUST cite a concrete file:line that appears in pr.diff. If you cannot, do not report it.
+- Prefer correctness bugs. Do NOT report formatting preferences or 'missing tests' as important.
+- NEVER report any of the following, regardless of severity: pre-existing issues not introduced by this diff; formatting/style preferences; purely speculative problems ('could potentially', 'might in theory') without a concrete failure path; anything a standard linter or compiler would catch; generic security advice not tied to a specific flaw in this diff; suggestions to add docstrings, comments, or type hints; suggestions to remove unused imports; advice to 'verify' or 'ensure' something without evidence it is wrong; claims about symbols defined outside this diff that you have not opened and read. If you are not certain an issue is real, do not flag it.
