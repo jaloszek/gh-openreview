@@ -7,6 +7,8 @@ Severity — calibrate to CORRECTNESS, not taste:
 - nit — minor, non-blocking (style, naming, small cleanup).
 - Pre-existing problems NOT introduced by this PR are OUT OF SCOPE — do not report them.
 
+For each changed file, explicitly check it against the language's known semantic traps before moving on — do not skip this even if nothing looks obviously wrong at a glance. In Kotlin/Java-like languages, walk through: (1) every `==`/`===` (or `.equals`) on a non-primitive — is reference equality being used where structural equality was intended, or vice versa; (2) every division involving money/amounts/currency — is it integer division silently truncating a fraction that should be preserved or rounded; (3) every `when`/`switch` over an enum — does it cover every case, including ones added after the statement was first written, with no `else`; (4) every wrapped-result call (`runCatching`, `Result`, `Try`, similar) — is the failure branch actually handled, or just discarded via `getOrNull`/`.ok()`/an empty catch; (5) every `!!` or force-unwrap — can the underlying value legitimately be absent at that call site. Only report a hit from this walk when you can point at the exact line where it goes wrong for this diff's actual code paths — not as generic advice (the do-not-flag rules still apply).
+
 Rules that cut noise:
 - Every finding MUST cite a concrete file:line that appears in pr.diff. If you cannot, do not report it.
 - Prefer correctness bugs. Do NOT report formatting preferences or 'missing tests' as important.
