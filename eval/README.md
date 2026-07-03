@@ -260,6 +260,17 @@ editing the same sticky comment, either:
 - re-run the workflow manually with the `restart: true` input, or
 - comment `@openreview restart` on the PR (trusted authors only).
 
+Two operational facts learned live (2026-07-04):
+
+- **The playground runs the PR branch's engine**, not main's (`uses: ./action`
+  after checking out the PR head). After engine changes on main, refresh it:
+  `git checkout eval/live-playground-base && git merge main && git push`,
+  then merge the base branch into `eval/live-playground` and push.
+- **Display-only changes don't invalidate the skip guard** (by design — the
+  fingerprint covers passes.sh/prompts/models, not render.sh), so a format
+  upgrade won't re-render an already-reviewed PR on its own. Use
+  `@openreview restart` to force a re-render.
+
 ### What this exercises that offline fixtures cannot
 
 - `lib/gather.sh` against a real PR (diff, PR meta, comments, commits) with
