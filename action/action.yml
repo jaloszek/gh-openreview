@@ -38,6 +38,10 @@ inputs:
     description: "Truncate the reviewed diff to this many lines (caps prompt cost on huge PRs). 0 disables truncation."
     required: false
     default: "4000"
+  triage-min-lines:
+    description: "Minimum reviewed-diff size (lines) before the cheap-model per-file triage pass runs. Only active when `cheap-model` is set. Files it marks TRIVIAL are dropped from the generate pass. Fails open (full diff reviewed) on any triage error."
+    required: false
+    default: "400"
   github-token:
     description: "Token used to fetch context and post the comment."
     required: false
@@ -103,6 +107,9 @@ outputs:
   duration-seconds:
     description: "Total LLM time across the passes, in seconds."
     value: ${{ steps.metrics.outputs.duration-seconds }}
+  files-triaged-trivial:
+    description: "Files skipped by the cheap-model per-file triage pass (0 when triage did not run)."
+    value: ${{ steps.metrics.outputs.files-triaged-trivial }}
 
 runs:
   using: "composite"
@@ -228,6 +235,7 @@ runs:
         VERIFY_MODEL: ${{ inputs.verify-model }}
         DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
         DIFF_MAX_LINES: ${{ inputs.diff-max-lines }}
+        TRIAGE_MIN_LINES: ${{ inputs.triage-min-lines }}
         MARKER: ${{ inputs.marker-header }}
         BOT: ${{ inputs.bot-login }}
         RESTART: ${{ steps.ctx.outputs.restart }}
@@ -259,6 +267,7 @@ runs:
             *) echo "OPENREVIEW_DIFF_EXCLUDE=$DIFF_EXCLUDE" ;;
           esac
           echo "OPENREVIEW_DIFF_MAX_LINES=$DIFF_MAX_LINES"
+          echo "OPENREVIEW_TRIAGE_MIN_LINES=$TRIAGE_MIN_LINES"
           echo "MARKER=$MARKER"
           # Dedup token: the marker text with leading '#'/spaces stripped, so a
           # custom marker-header works without manually keeping a magic substring.

@@ -1,0 +1,5 @@
+For each changed file, decide TRIVIAL or NEEDS_REVIEW:
+- TRIVIAL: pure rename/move with no content change, formatting/whitespace-only, comment-only, or generated/mechanical churn (lockfiles, generated code, vendored files) with NO behavior change.
+- NEEDS_REVIEW: everything else.
+
+When in doubt, mark NEEDS_REVIEW. Never mark a file TRIVIAL if its diff touches logic, error handling, or security surface, even partially — a file can have mostly-mechanical churn and still be NEEDS_REVIEW because of one changed line.

@@ -30,6 +30,7 @@ PREP_PROMPT="$(load_prompt prep.txt)"
 GENERATE_PROMPT="$(load_prompt generate.txt)"
 VERIFY_PROMPT="$(load_prompt verify.txt)"
 FORMAT_SPEC="$(load_prompt format-spec.txt)"
+TRIAGE_PROMPT="$(load_prompt triage.txt)"
 
 # Telemetry accumulator (read by metrics.sh -> step summary + action outputs).
 # gather.sh created it (DIFF_LINES); append so we don't clobber that.
@@ -39,6 +40,7 @@ METRICS="$SCRATCH/metrics.env"
   echo "OR_VERIFY_MODEL=$OR_VERIFY_MODEL"
   echo "OR_CHEAP_MODEL=$OR_CHEAP_MODEL"
   echo "PREP_SECS=0"
+  echo "TRIAGE_SECS=0"
   echo "PASS2_SECS=0"
 } >> "$METRICS"
 
@@ -64,6 +66,85 @@ $PREP_PROMPT Output ONLY the brief to $S/intent.md. Do not review code, do not p
   echo "PREP_SECS=$((SECONDS - _tp))" >> "$METRICS"
   oc_extract_metrics "$SCRATCH/oc-prep.jsonl" "PREP"
 fi
+
+# --- TRIAGE (cheap tier): per-file trivial/needs-review split --------------
+# When a cheap model is configured and the diff is big enough to be worth the
+# extra call, ask it to flag files whose diff is pure churn (rename/format/
+# generated) so pass 1 can drop them from its budget and focus on files that
+# actually need a reviewer (the original-CodeRabbit pattern). Fail-open at
+# every step: triage error, unparseable output, or 0 NEEDS_REVIEW files falls
+# straight back to reviewing the full pr-numbered.diff, exactly as before
+# triage existed. A malformed per-line record is treated as NEEDS_REVIEW.
+TRIAGE_MIN_LINES="${OPENREVIEW_TRIAGE_MIN_LINES:-400}"
+DIFF_LINE_COUNT=$(wc -l < "$SCRATCH/pr-numbered.diff" | tr -d ' ')
+REVIEW_DIFF_FILE="pr-numbered.diff"
+FILE_SUMMARIES_CONTEXT=""
+FILES_TRIAGED_TRIVIAL=0
+
+rm -f "$SCRATCH/triage.md"
+if [ -n "$OR_CHEAP_MODEL" ] && [ "$DIFF_LINE_COUNT" -gt "$TRIAGE_MIN_LINES" ]; then
+  info "prep — per-file triage (model: $OR_CHEAP_MODEL)"
+  _tt=$SECONDS
+  oc_run "$OR_DIR" "$OR_CHEAP_MODEL" "You are triaging changed files in a PR diff before a full code review. Your read/write tools are sandboxed to the project directory — use relative paths under $S/ only, never /tmp.
+
+Read $S/pr-numbered.diff (every changed file in this PR).
+
+$TRIAGE_PROMPT
+
+Write ONE line per changed file to $S/triage.md, tab-separated, in this exact format (no header, no extra text, no code fences):
+path<TAB>NEEDS_REVIEW|TRIVIAL<TAB>one-line summary of the change
+
+Output ONLY $S/triage.md. Do not review code, do not post anything." "triage" \
+    || warn "triage pass failed — falling back to full-diff review"
+  echo "TRIAGE_SECS=$((SECONDS - _tt))" >> "$METRICS"
+  oc_extract_metrics "$SCRATCH/oc-triage.jsonl" "TRIAGE"
+
+  if [ -s "$SCRATCH/triage.md" ]; then
+    TRIVIAL_LIST="$SCRATCH/.triage-trivial.list"
+    SUMMARY_LIST="$SCRATCH/.triage-summaries.list"
+    : > "$TRIVIAL_LIST"; : > "$SUMMARY_LIST"
+    n_needs=0
+    while IFS="$(printf '\t')" read -r t_path t_status t_summary; do
+      [ -n "$t_path" ] || continue
+      case "$t_status" in
+        TRIVIAL) printf '%s\n' "$t_path" >> "$TRIVIAL_LIST" ;;
+        NEEDS_REVIEW) n_needs=$((n_needs + 1)) ;;
+        *) n_needs=$((n_needs + 1)) ;;  # malformed status -> fail open per-file
+      esac
+      [ -n "$t_summary" ] && printf -- '- %s: %s\n' "$t_path" "$t_summary" >> "$SUMMARY_LIST"
+    done < "$SCRATCH/triage.md"
+
+    n_trivial=$(wc -l < "$TRIVIAL_LIST" | tr -d ' ')
+    if [ "$n_needs" -gt 0 ] && [ "$n_trivial" -gt 0 ]; then
+      # Reuse gather's whole-file-block awk filter pattern: drop the `diff
+      # --git` block of every file marked TRIVIAL from pr-numbered.diff.
+      awk -v triv="$TRIVIAL_LIST" '
+        BEGIN { while ((getline p < triv) > 0) trivial[p] = 1 }
+        /^diff --git / {
+          path=$0; sub(/^diff --git a\/.* b\//, "", path)
+          emit = trivial[path] ? 0 : 1
+          if (!emit) print "- " path >> "/dev/stderr"
+        }
+        emit { print }
+      ' "$SCRATCH/pr-numbered.diff" > "$SCRATCH/pr-review.diff" 2> "$SCRATCH/.triage-dropped"
+      {
+        echo ""
+        echo "## Files triaged as trivial (not shown)"
+        cat "$SCRATCH/.triage-dropped"
+      } >> "$SCRATCH/pr-review.diff"
+      rm -f "$SCRATCH/.triage-dropped"
+      REVIEW_DIFF_FILE="pr-review.diff"
+      FILES_TRIAGED_TRIVIAL="$n_trivial"
+      [ -s "$SUMMARY_LIST" ] && FILE_SUMMARIES_CONTEXT="- $S/triage.md — per-file summaries from a pre-pass triage (what each changed file does); use it to orient quickly, but judge the code from the diff itself."
+      info "triage: $n_trivial file(s) marked trivial, $n_needs need review"
+    else
+      info "triage: nothing to drop (0 trivial or 0 needs-review) — reviewing full diff"
+    fi
+  else
+    warn "triage produced no parseable output — falling back to full-diff review"
+  fi
+fi
+echo "FILES_TRIAGED_TRIVIAL=$FILES_TRIAGED_TRIVIAL" >> "$METRICS"
 
 # Pass-1 requirement context: the distilled brief when cheap routing produced
 # one, otherwise the raw issue/commit files (unchanged behavior).
@@ -93,10 +174,11 @@ oc_run "$OR_DIR" "$OR_MODEL" "You are a senior engineer reviewing a GitHub pull 
 IMPORTANT: your read and write tools are sandboxed to the project directory. ALL scratch files must use relative paths under $S/ (e.g. $S/pr.diff) — NEVER /tmp or any absolute path, those are rejected.
 
 Read the context with your read tool:
-- $S/pr-numbered.diff — the diff to review (review ONLY changes in this diff). Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself.
+- $S/$REVIEW_DIFF_FILE — the diff to review (review ONLY changes in this diff). Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself.
 - $S/pr-meta.json — the PR title, body, and changed files.
 $INTENT_CONTEXT
 $INCREMENTAL_CONTEXT
+$FILE_SUMMARIES_CONTEXT
 - $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
 - $S/prev-review.md — your previous review of an EARLIER version of this PR (may say '(no previous review)').
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.

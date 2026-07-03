@@ -65,6 +65,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `model` | `opencode/deepseek-v4-flash-free` | Model id for the analysis (generate) pass. |
 | `cheap-model` | `""` | Small/fast/free model the engine routes prep work to (intent compression) and uses as the default verify tier. Empty disables cheap routing. |
 | `verify-model` | `""` | Model id for the verification pass. Empty falls back to `cheap-model`, then `model`. |
+| `triage-min-lines` | `400` | Minimum reviewed-diff size (lines) before the cheap-model per-file triage pass runs. Only active when `cheap-model` is set. Fails open (full diff reviewed) on any triage error. |
 | `opencode-version` | `1.17.13` | Exact opencode version to install. opencode ships releases every 1-3 days, so pinning avoids an untested version silently landing mid-run. Empty installs latest — not recommended. |
 | `github-token` | `${{ github.token }}` | Used only by the gather + post steps. |
 | `trigger-phrase` | `@openreview` | Comment body that triggers an on-demand review. |
@@ -164,11 +165,25 @@ on the actual review. When provided, the engine:
   linked issues, PR body, and commits into a short brief — so the strong generate
   pass reads ~8 lines of requirement context instead of the raw text, and
 - runs the **verification pass** on the cheap model (unless `verify-model`
-  overrides it).
+  overrides it), and
+- when the reviewed diff is at least `triage-min-lines` lines (default `400`),
+  runs a **per-file triage** pass on the cheap model that reads the diff and
+  marks each changed file `NEEDS_REVIEW` or `TRIVIAL` (pure rename/move,
+  formatting/comment-only, or generated/mechanical churn with no behavior
+  change). Files marked `TRIVIAL` are dropped from the generate pass's diff —
+  the strong model spends its budget on files that actually need it, with a
+  one-line summary of every changed file injected as extra context. The
+  verification pass still checks findings against the full diff, unaffected.
 
-The expensive reasoning still runs on `model`; only the prep/verify work moves to
-the cheap tier. Leaving `cheap-model` empty preserves the original behaviour
-(everything on `model`, no extra calls).
+Triage **fails open**: a triage error, unparseable output, or a run that
+ends up with zero files marked `NEEDS_REVIEW` falls straight back to
+reviewing the full diff, exactly as if triage were off. A single malformed
+per-file line is treated as `NEEDS_REVIEW` (the file stays in), never as
+`TRIVIAL`.
+
+The expensive reasoning still runs on `model`; only the prep/verify/triage
+work moves to the cheap tier. Leaving `cheap-model` empty preserves the
+original behaviour (everything on `model`, no extra calls, no triage).
 
 ```yaml
 with:

@@ -11,16 +11,17 @@ set -uo pipefail
 METRICS="$SCRATCH/metrics.env"
 
 # Defaults so a partial run still reports something sane.
-DIFF_LINES=0 PREP_SECS=0 PASS1_SECS=0 PASS2_SECS=0
+DIFF_LINES=0 PREP_SECS=0 TRIAGE_SECS=0 PASS1_SECS=0 PASS2_SECS=0
 OR_MODEL="" OR_VERIFY_MODEL="" OR_CHEAP_MODEL=""
 OR_FINDINGS_IMPORTANT=0 OR_FINDINGS_NIT=0 OR_FINDINGS_TOTAL=0 FINDINGS_SUPPRESSED=0
+FILES_TRIAGED_TRIVIAL=0
 PREP_COST="" PREP_TOKENS_IN="" PREP_TOKENS_OUT="" PREP_CACHE_READ=""
 PASS1_COST="" PASS1_TOKENS_IN="" PASS1_TOKENS_OUT="" PASS1_CACHE_READ=""
 PASS2_COST="" PASS2_TOKENS_IN="" PASS2_TOKENS_OUT="" PASS2_CACHE_READ=""
 # shellcheck disable=SC1090
 [ -f "$METRICS" ] && . "$METRICS"
 
-total_secs=$(( PREP_SECS + PASS1_SECS + PASS2_SECS ))
+total_secs=$(( PREP_SECS + TRIAGE_SECS + PASS1_SECS + PASS2_SECS ))
 
 # Sum whatever cost figures we have (missing ones just contribute 0); awk
 # avoids a bc/bash-float dependency for the fractional-USD addition.
@@ -36,6 +37,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "diff-lines=$DIFF_LINES"
     echo "duration-seconds=$total_secs"
     echo "total-cost=$total_cost"
+    echo "files-triaged-trivial=$FILES_TRIAGED_TRIVIAL"
   } >> "$GITHUB_OUTPUT"
 fi
 
