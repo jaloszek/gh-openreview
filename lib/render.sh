@@ -13,7 +13,8 @@
 #   body: <single line, includes the suggested fix>
 #   ... (repeat) ...
 #   @@PRDESC
-#   <freeform markdown to EOF — the suggested PR title/body>
+#   rating: good | could-be-improved | poor
+#   reason: one short line (omitted when rating is good)
 #
 # Selection policy:
 #   - 🔴 important: render ALL.
@@ -88,12 +89,14 @@ awk -v prdesc="$PRDESC" '
 defang_file "$TSV"
 defang_file "$PRDESC"
 
-# Length-cap the suggested PR description at 4000 chars.
-PRDESC_CAP=4000
-if [ "$(wc -c < "$PRDESC" | tr -d ' ')" -gt "$PRDESC_CAP" ]; then
-  cut -c1-"$PRDESC_CAP" "$PRDESC" > "$PRDESC.trunc" && mv "$PRDESC.trunc" "$PRDESC"
-  printf '\n\n[truncated]\n' >> "$PRDESC"
-fi
+# Parse the rating/reason trailer defensively: unknown/missing rating -> "good"
+# (render nothing). Only the first "rating:"/"reason:" lines are honored.
+PRDESC_RATING=$(awk -F': *' 'tolower($0) ~ /^rating:/ { print tolower($2); exit }' "$PRDESC" | tr -d '[:space:]')
+PRDESC_REASON=$(awk -F': *' 'tolower($0) ~ /^reason:/ { sub(/^[^:]*: */, ""); print; exit }' "$PRDESC")
+case "$PRDESC_RATING" in
+  poor|could-be-improved) ;;
+  *) PRDESC_RATING="good" ;;
+esac
 
 # 2) Tallies.
 n_important=$(awk -F'\t' '$2=="important"{c++} END{print c+0}' "$TSV")
@@ -151,11 +154,9 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     ' "$TSV"
   fi
 
-  # always append the suggested PR description, collapsed
-  if [ -s "$PRDESC" ]; then
-    printf '<details><summary>📝 Suggested PR description</summary>\n\n'
-    cat "$PRDESC"
-    printf '\n</details>\n'
+  # PR-description rating: render one line only when it's not "good".
+  if [ "$PRDESC_RATING" != "good" ]; then
+    printf '> 📝 PR description: **%s** — %s\n' "$PRDESC_RATING" "$PRDESC_REASON"
   fi
 } > "$OUT"
 

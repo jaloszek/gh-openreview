@@ -68,9 +68,12 @@ conf: high   (high | med | low)
 title: one short line
 body: one to three sentences on a SINGLE line — the reason grounded in the diff, plus a concrete suggested fix.
 Repeat @@FINDING blocks for each finding. If there are NO findings, write no @@FINDING blocks at all.
-Then ALWAYS end the file with this section (freeform markdown to end of file):
+Then ALWAYS end the file with exactly:
 @@PRDESC
-<a concise improved PR title on the first line, then an improved PR description body>"
+rating: good | could-be-improved | poor
+reason: one short line explaining the rating (omit this line when rating is good)
+
+Rate the PR description (from pr-meta.json) against what the diff actually does. 'poor' = the PR description is empty, extremely outdated, or contradicts what the diff actually does. 'could-be-improved' = major gaps but acceptable to merge as-is. 'good' = everything else. Do NOT write a replacement description — rating + reason only."
 
 GENERATE_FAILED=0
 
