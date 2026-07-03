@@ -217,19 +217,20 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
 
 # 3) Emit the comment.
 {
-  printf '%s\n\n' "$MARKER"
-
   if [ "$n_total" -eq 0 ]; then
+    printf '%s\n\n' "$MARKER"
     printf '✅ No blocking issues found in this diff.\n\n'
   else
-    # bold tally
+    # Tally lives IN the header line — one-glance verdict (the field's
+    # most-praised element). Safe for dedup: MARKER_MATCH is a substring
+    # check, and post.sh only requires the marker token to be present.
     parts=""
     [ "$n_important" -gt 0 ] && parts="$n_important important"
     if [ "$n_nit" -gt 0 ]; then
       nit_word=$([ "$n_nit" -eq 1 ] && echo nit || echo nits)
       [ -n "$parts" ] && parts="$parts · $n_nit $nit_word" || parts="$n_nit $nit_word"
     fi
-    printf '**%s**\n\n' "$parts"
+    printf '%s — %s\n\n' "$MARKER" "$parts"
 
     # flat priority list: 🔴 high-conf important, 🟠 med/low-conf important
     # (rare — low-conf importants are demoted to nit above), 🟡 nit. Order is
