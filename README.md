@@ -58,6 +58,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `model` | `opencode/deepseek-v4-flash-free` | Model id for the analysis (generate) pass. |
 | `cheap-model` | `""` | Small/fast/free model the engine routes prep work to (intent compression) and uses as the default verify tier. Empty disables cheap routing. |
 | `verify-model` | `""` | Model id for the verification pass. Empty falls back to `cheap-model`, then `model`. |
+| `opencode-version` | `1.17.13` | Exact opencode version to install. opencode ships releases every 1-3 days, so pinning avoids an untested version silently landing mid-run. Empty installs latest — not recommended. |
 | `github-token` | `${{ github.token }}` | Used only by the gather + post steps. |
 | `trigger-phrase` | `@openreview` | Comment body that triggers an on-demand review. |
 | `trigger-label` | `opencode-review` | Label whose addition triggers a review. |
