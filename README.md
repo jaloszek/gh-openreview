@@ -65,6 +65,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `marker-header` | `## 🤖 OpenCode Review` | First line of the posted comment; used for dedup. |
 | `bot-login` | `github-actions[bot]` | Comment author whose stale reviews are pruned. |
 | `min-confidence` | `low` | Minimum confidence (`low`/`med`/`high`) a finding must have to be rendered. Below-threshold findings are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting. |
+| `update-ping` | `false` | When `true`, editing an existing sticky comment with ≥1 important finding also posts a short unmarked ping comment; pruned on the next run. |
 
 ## Outputs
 
