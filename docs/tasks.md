@@ -726,17 +726,123 @@ diff didn't.
 - Comment `@openreview restart` sets the env var; plain `@openreview` does
   not. `shellcheck` + `actionlint` pass.
 
+## TASK-23 — Prompts as versioned files (AG alternative; supersedes the named-agents refactor)
+
+**Files:** new `prompts/` dir, `lib/passes.sh`, `lib/common.sh`
+(fingerprint), `CLAUDE.md` (one line in architecture notes).
+**Design decision (2026-07-03):** the opencode named-agents refactor (AG)
+is DROPPED — a consumer repo's own `opencode.json` replaces the bundled
+config wholesale (documented precedence), which would delete the agent
+definitions and break `--agent` runs. This task delivers AG's actual value
+(versioned, reviewable prompt files) with zero coupling to opencode's
+config: prompts stay plain files read by `passes.sh`.
+
+**Spec:**
+1. Create `prompts/generate.txt`, `prompts/verify.txt`, `prompts/prep.txt`,
+   `prompts/format-spec.txt` containing the STATIC blocks currently inlined
+   in `lib/passes.sh` (persona + rules + kill-list for generate; the verify
+   rules + DROP criteria; the prep/intent-compression prompt body; the
+   shared FORMAT_SPEC). Dynamic parts (context file lists, incremental
+   note, sandbox path coaching that embeds `$S`) STAY assembled in
+   `passes.sh` — do not invent a templating language; the files hold only
+   the big static text, `passes.sh` `cat`s them and concatenates exactly as
+   before.
+2. Resolve the prompts dir relative to the script:
+   `PROMPTS_DIR="${OPENREVIEW_PROMPTS_DIR:-$(cd "$(dirname "$0")/.." && pwd)/prompts}"`
+   — works in the action checkout and local runs. `die` with a clear
+   message if a prompt file is missing.
+3. **Fingerprint interaction (critical):** `engine_fingerprint` in
+   `common.sh` currently hashes `lib/passes.sh` — extend it to also hash
+   every file in `prompts/` (stable order: `LC_ALL=C sort` the paths). A
+   prompt edit must invalidate the skip guard exactly like a passes.sh
+   edit.
+4. Verification: capture the fully-assembled prompt for each pass BEFORE
+   the refactor (reconstruct from git) and AFTER — they must be
+   byte-identical for the same inputs. Include the diff evidence (empty)
+   in the summary.
+
+**Acceptance criteria:**
+- Assembled prompts byte-identical pre/post refactor (show evidence).
+- Missing prompt file ⇒ clean `die`, not a silent empty prompt.
+- Fingerprint changes when any `prompts/*.txt` changes (show two hashes).
+- `shellcheck -S warning lib/*.sh` clean; eval `--selftest` unaffected (if
+  eval/ exists on the branch).
+
+## TASK-24 — Org dispatch workflow + setup guide (Part 3, step 1)
+
+**Files:** new `.github/workflows/review-dispatch.yml`, new
+`docs/org-setup.md`, `action/action.yml` (two new optional inputs),
+`README.md` (pointer).
+**Context:** `docs/improvement-plan.md` §3.1 (the verified App-token
+pattern); `docs/implementation-notes.md` §2. This ships the org-wide
+manual-invocation story: fork this repo into an org → dispatch a review of
+ANY org PR from the fork. It cannot be live-tested in this personal repo
+(no App registered) — it must be actionlint-clean and defensively written;
+live validation happens on first org install.
+
+**Spec:**
+1. **Action inputs:** add optional `target-repo` (owner/repo) and
+   `pr-number` to `action/action.yml`. When both are set, the ctx step uses
+   them directly as `OR_REPO`/`OR_PR` (skipping event-payload parsing);
+   when unset, behavior is unchanged. Document that dispatch callers must
+   also check out the target repo themselves.
+2. **`review-dispatch.yml`** (`workflow_dispatch`) with inputs: `repo`
+   (owner/repo within the org), `pr` (number), `restart` (boolean, default
+   false). Job steps:
+   a. Fail fast with a readable error if `vars.REVIEWER_APP_CLIENT_ID` or
+      `secrets.REVIEWER_APP_PRIVATE_KEY` is missing ("see
+      docs/org-setup.md").
+   b. Mint the token with `actions/create-github-app-token@v2`:
+      `owner: ${{ github.repository_owner }}`, `repositories:` the repo
+      NAME only (strip the owner prefix from the input in a small step),
+      `permission-contents: read`, `permission-pull-requests: write`,
+      `permission-issues: write`.
+   c. `actions/checkout@v4` of the fork itself (for the action code) into
+      the workspace root, then a second checkout of the TARGET repo
+      (`repository: ${{ inputs.repo }}`, `ref: refs/pull/${{ inputs.pr }}/head`,
+      `fetch-depth: 0`, `token:` the minted token) into a `target/`
+      subdirectory.
+   d. Run the local action (`uses: ./action`) passing `target-repo`,
+      `pr-number`, `restart`, `github-token:` (minted token), and model
+      inputs from org vars/secrets. NOTE: verify how the action locates the
+      repo dir (`OR_DIR` = git toplevel of the CURRENT working dir) — the
+      composite action's steps must run against `target/`; check how
+      action.yml sets OR_DIR today and either add a `working-directory`
+      input or an explicit `target-dir` input, and document which you
+      chose.
+3. **`docs/org-setup.md`** — the 10-minute checklist for an org admin:
+   register a GitHub App (webhook OFF; permissions metadata:read,
+   contents:read, pull-requests:write, issues:write), install org-wide,
+   store client ID (org variable) + private key (org secret) + model key
+   (org secret); invocation examples
+   (`gh workflow run review-dispatch.yml -R org/fork -f repo=org/target -f pr=123`,
+   the Actions-tab route, `-f restart=true`); a security trade-offs section
+   (who can dispatch = write access to the fork; per-run `repositories:`
+   scoping; recommend branch protection + CODEOWNERS on the fork). Link it
+   from README.
+4. Do NOT touch existing workflows or the trigger logic in the action's
+   event path (SECURITY.md rules apply).
+
+**Acceptance criteria:**
+- `actionlint .github/workflows/*.yml` clean; `shellcheck` clean for any
+  touched lib file.
+- Dry-run evidence: with `target-repo`/`pr-number` shimmed locally, ctx
+  resolution yields the right `OR_REPO`/`OR_PR` without an event payload;
+  without them, existing event parsing untouched (regression evidence).
+- `docs/org-setup.md` complete enough that an org admin needs no other
+  document; README links it.
+- The dispatch workflow contains NO `pull_request_target` and never exposes
+  the App private key beyond the token-mint step.
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
-- **T (cheap triage)** — routing thresholds + prompt design tuning.
-- **AG (named-agents refactor)** — decided, but it restructures the engine
-  core AND has an open design conflict: a consumer repo's own
-  `opencode.json` replaces the bundled config entirely (documented
-  precedence), which would delete the agent definitions and break
-  `--agent` invocations. Needs a fallback design first (detect missing
-  agents → inline prompts?). Maintainer/strong-agent work.
-- **Part 3 (org dispatch, App, hub knowledge base)** — org setup is human
-  work; harvest/warmup design still needs decisions.
+- **T (cheap triage)** — routing thresholds + prompt design tuning; now
+  measurable — spec after the eval suite (TASK-19/20/21) merges.
+- **Part 3 remainder (harvest cron, warmup skills, knowledge picker)** —
+  epic-level design decided; detailed specs after TASK-24 ships and an org
+  App exists to test against.
 - **V/U/W/N/O/L′, Tier 4 (Y/Z/AA)** — design open or eval-dependent.
+- ~~AG (named-agents refactor)~~ — dropped in favor of TASK-23 (see its
+  header for rationale).
