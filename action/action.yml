@@ -109,7 +109,8 @@ runs:
               run=true; pr="$PR_PR"
             fi ;;
           issue_comment)
-            if [ -n "$IS_PR_URL" ] && printf '%s' "$COMMENT_BODY" | grep -qF "$TRIGGER_PHRASE"; then
+            escaped_phrase=$(printf '%s' "$TRIGGER_PHRASE" | sed 's/[.[\*^$/]/\\&/g')
+            if [ -n "$IS_PR_URL" ] && printf '%s' "$COMMENT_BODY" | grep -qE "(^|[[:space:]])${escaped_phrase}([[:space:][:punct:]]|$)"; then
               if is_trusted "$COMMENT_ASSOC"; then
                 run=true; pr="$PR_ISSUE"
               else
