@@ -85,7 +85,7 @@ oc_run "$OR_DIR" "$OR_MODEL" "You are a senior engineer reviewing a GitHub pull 
 IMPORTANT: your read and write tools are sandboxed to the project directory. ALL scratch files must use relative paths under $S/ (e.g. $S/pr.diff) — NEVER /tmp or any absolute path, those are rejected.
 
 Read the context with your read tool:
-- $S/pr.diff — the diff to review (review ONLY changes in this diff).
+- $S/pr-numbered.diff — the diff to review (review ONLY changes in this diff). Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself.
 - $S/pr-meta.json — the PR title, body, and changed files.
 $INTENT_CONTEXT
 - $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
@@ -129,7 +129,7 @@ if [ "$HAS_CANDIDATES" = "1" ]; then
   oc_run "$OR_DIR" "$OR_VERIFY_MODEL" "Verification pass. Do NOT look for new issues — that only adds noise.
 
 IMPORTANT: your read/write tools are sandboxed to the project directory — use relative paths only, never /tmp.
-Read $S/pr.diff and $S/review-candidates.md with your read tool. Open changed files for context when a claim needs it.
+Read $S/pr-numbered.diff and $S/review-candidates.md with your read tool. Open changed files for context when a claim needs it. Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself.
 
 For EACH @@FINDING, KEEP it only if ALL hold:
 1. its loc file:line refers to a line actually present in pr.diff,

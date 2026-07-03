@@ -34,7 +34,9 @@ case "$MIN_CONF" in
 esac
 IN="$SCRATCH/review-verified.md"
 OUT="$SCRATCH/opencode-review.md"
+COMMENTABLE="$SCRATCH/commentable-lines.tsv"
 [ -f "$IN" ] || printf '@@PRDESC\n' > "$IN"
+[ -f "$COMMENTABLE" ] || : > "$COMMENTABLE"
 
 # Egress sanitization: defang model-authored text before it reaches the
 # posted comment (CamoLeak-style exfil via images, mention/ref spam). Only
@@ -112,6 +114,50 @@ awk -F'\t' -v OFS='\t' -v min="$MIN_CONF" '
 ' "$TSV.all" > "$TSV"
 rm -f "$TSV.all"
 
+# Anchor validation: exact path:line in commentable-lines.tsv -> kept as-is;
+# within +-3 lines of a commentable line on the same path -> snap to it (note
+# the adjustment); otherwise mark [unanchored] rather than dropping it. Adds a
+# 9th column (anchor note) consumed by the detail-block renderer below.
+awk -F'\t' -v OFS='\t' -v cf="$COMMENTABLE" '
+  BEGIN {
+    while ((getline line < cf) > 0) {
+      n = split(line, a, "\t")
+      if (n >= 2) commentable[a[1] SUBSEP (a[2]+0)] = 1
+    }
+    close(cf)
+  }
+  {
+    loc = $3; path = loc; hasline = 0
+    idx = match(loc, /:[0-9]+$/)
+    if (idx > 0) { path = substr(loc, 1, idx-1); ln = substr(loc, idx+1) + 0; hasline = 1 }
+    note = ""
+    if (hasline && ((path SUBSEP ln) in commentable)) {
+      note = ""
+    } else if (hasline) {
+      found = 0
+      for (d = 1; d <= 3 && !found; d++) {
+        if ((path SUBSEP (ln+d)) in commentable) { newln = ln+d; found = 1 }
+        else if ((path SUBSEP (ln-d)) in commentable) { newln = ln-d; found = 1 }
+      }
+      if (found) {
+        note = sprintf("snapped from %s:%d to nearest commentable line", path, ln)
+        $3 = path ":" newln
+      } else {
+        note = "[unanchored]"
+        unanchored++
+      }
+    } else {
+      note = "[unanchored]"
+      unanchored++
+    }
+    print $0, note
+  }
+  END { print unanchored+0 > "/dev/stderr" }
+' "$TSV" 2> "$TSV.unanchored" > "$TSV.annot"
+mv "$TSV.annot" "$TSV"
+n_unanchored=$(cat "$TSV.unanchored" 2>/dev/null || echo 0)
+rm -f "$TSV.unanchored"
+
 defang_file "$TSV"
 defang_file "$PRDESC"
 
@@ -169,7 +215,7 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     awk -F'\t' -v cap="$NIT_CAP" '
       BEGIN { i=0; nit=0 }
       {
-        sev=$2; loc=$3; conf=$4; title=$5; body=$6; orig_sev=$8
+        sev=$2; loc=$3; conf=$4; title=$5; body=$6; orig_sev=$8; note=$9
         if (sev=="nit") { nit++; if (nit>cap) next }
         i++
         printf "### %d. %s\n", i, title
@@ -178,6 +224,10 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
         printf "- **Location:** `%s`\n- **Confidence:** %s\n", loc, conf
         if (orig_sev != sev)
           printf "- **Original severity:** %s (demoted: low confidence)\n", orig_sev
+        if (note != "" && note != "[unanchored]")
+          printf "- **Anchor:** %s\n", note
+        else if (note == "[unanchored]")
+          printf "- **Anchor:** [unanchored] — location could not be matched to the diff\n"
         printf "</details>\n\n"
       }
     ' "$TSV"
@@ -200,4 +250,5 @@ ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} importa
   echo "OR_FINDINGS_NIT=$n_nit"
   echo "OR_FINDINGS_TOTAL=$n_total"
   echo "FINDINGS_SUPPRESSED=$n_suppressed"
+  echo "FINDINGS_UNANCHORED=${n_unanchored:-0}"
 } >> "$SCRATCH/metrics.env" 2>/dev/null || true

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pre-fetch PR context into $SCRATCH so the opencode passes never need a token.
-# Writes: pr.diff, pr-meta.json, prev-review.md. Uses inherited gh auth (local)
-# or step-scoped GH_TOKEN (CI).
+# Writes: pr.diff, pr-numbered.diff, commentable-lines.tsv, pr-meta.json,
+# prev-review.md. Uses inherited gh auth (local) or step-scoped GH_TOKEN (CI).
 # Env: OR_REPO, OR_PR, SCRATCH, MARKER_MATCH,
 #      OPENREVIEW_DIFF_EXCLUDE (ERE matched against each file's path; matching
 #        files are dropped from the diff — lockfiles, generated, vendored, …),
@@ -30,6 +30,19 @@ gh pr view "$OR_PR" --repo "$OR_REPO" --json title,body,files > "$SCRATCH/pr-met
 # was dropped so coverage is never silently reduced.
 RAW="$SCRATCH/.pr.diff.raw"
 gh pr diff "$OR_PR" --repo "$OR_REPO" > "$RAW"
+
+# commentable-lines.tsv: every new-file line (added or context) present in any
+# hunk of the UNTRIMMED diff — i.e. before exclude/max-lines trimming, so
+# validation in render.sh isn't fooled by a line that got trimmed away.
+awk '
+  /^diff --git / { path=$0; sub(/^diff --git a\//,"",path); sub(/ b\/.*$/,"",path); next }
+  /^(---|\+\+\+)/ { next }
+  /^@@/ { match($0, /\+[0-9]+/); newno = substr($0, RSTART+1, RLENGTH-1) + 0; next }
+  /^\+/ { if (path != "") { print path "\t" newno }; newno++; next }
+  /^-/  { next }
+  /^ /  { if (path != "") { print path "\t" newno }; newno++; next }
+' "$RAW" > "$SCRATCH/commentable-lines.tsv"
+
 if [ -n "$DIFF_EXCLUDE" ]; then
   awk -v ex="$DIFF_EXCLUDE" '
     /^diff --git / {
@@ -61,6 +74,22 @@ if [ "$DIFF_MAX_LINES" -gt 0 ]; then
     echo "::notice::openreview truncated the diff to $DIFF_MAX_LINES of $total lines"
   fi
 fi
+
+# pr-numbered.diff: same diff --git / @@ structure as pr.diff, but every
+# unchanged/added line is prefixed with its new-file line number right-aligned
+# in a fixed 6-char column followed by "| " (deleted lines get 6 spaces
+# instead of a number). Lets the model copy loc: line numbers verbatim
+# instead of computing them itself.
+awk '
+  /^diff --git / { print; next }
+  /^(---|\+\+\+|index |new file mode|deleted file mode|similarity index|rename |old mode|new mode|Binary files)/ { print; next }
+  /^@@/ { match($0, /\+[0-9]+/); newno = substr($0, RSTART+1, RLENGTH-1) + 0; print; next }
+  /^\\/ { printf "      | %s\n", $0; next }
+  /^\+/ { printf "%6d| %s\n", newno, $0; newno++; next }
+  /^-/  { printf "      | %s\n", $0; next }
+  /^ /  { printf "%6d| %s\n", newno, $0; newno++; next }
+  { print }
+' "$SCRATCH/pr.diff" > "$SCRATCH/pr-numbered.diff"
 
 # Most recent prior review (matched by the marker substring, any author) so the
 # reviewer can stay silent about findings since fixed. Empty on the first run.
@@ -123,6 +152,8 @@ OWNER="${OR_REPO%%/*}"; REPO="${OR_REPO##*/}"
 # Strip invisible-Unicode smuggling vectors from every fetched text context
 # file before the model sees it (pr-meta.json values are left alone).
 sanitize_text "$SCRATCH/pr.diff"
+sanitize_text "$SCRATCH/pr-numbered.diff"
+sanitize_text "$SCRATCH/commentable-lines.tsv"
 sanitize_text "$SCRATCH/linked-issues.md"
 sanitize_text "$SCRATCH/pr-commits.md"
 sanitize_text "$SCRATCH/pr-comments.md"
