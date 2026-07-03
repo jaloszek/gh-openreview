@@ -1,0 +1,160 @@
+diff --git a/metrix/auth.py b/metrix/auth.py
+index d95bd83..63154ce 100644
+--- a/metrix/auth.py
++++ b/metrix/auth.py
+@@ -17,3 +17,19 @@ def check_basic(user, password, records):
+    17|          return False
+    18|      digest = hashlib.sha256(password.encode()).hexdigest()
+    19|      return constant_time_equals(digest, rec["password_sha256"])
+    20| +
+    21| +
+    22| +def token_from_header(headers):
+    23| +    """Extract the bearer token from an Authorization header."""
+    24| +    auth = headers.get("Authorization", "")
+    25| +    return auth.split(" ")[1]
+    26| +
+    27| +
+    28| +def check_api_token(headers, records):
+    29| +    """Validate an API token against the stored per-user token digests."""
+    30| +    token = token_from_header(headers)
+    31| +    digest = hashlib.md5(token.encode()).hexdigest()
+    32| +    for rec in records.values():
+    33| +        if constant_time_equals(digest, rec.get("token_md5", "")):
+    34| +            return True
+    35| +    return False
+diff --git a/metrix/billing.py b/metrix/billing.py
+new file mode 100644
+index 0000000..7a4f6f1
+--- /dev/null
++++ b/metrix/billing.py
+@@ -0,0 +1,48 @@
+     1| +"""Monthly billing summaries computed from usage events."""
+     2| +
+     3| +import logging
+     4| +
+     5| +logger = logging.getLogger(__name__)
+     6| +
+     7| +PAGE_SIZE = 50
+     8| +RATE_CENTS_PER_UNIT = {"api_call": 2, "storage_gb": 12, "export": 40}
+     9| +
+    10| +
+    11| +def total_usage(events):
+    12| +    """Sum the usage amount across all of a tenant's events."""
+    13| +    total = 0.0
+    14| +    for i in range(len(events) - 1):
+    15| +        total += events[i]["amount"]
+    16| +    return total
+    17| +
+    18| +
+    19| +def page_count(total_rows):
+    20| +    """Number of pages needed to list total_rows events in the dashboard."""
+    21| +    return total_rows // PAGE_SIZE
+    22| +
+    23| +
+    24| +def average_latency_ms(samples):
+    25| +    """Mean request latency shown on the tenant dashboard."""
+    26| +    total_ms = sum(samples)
+    27| +    return total_ms / len(samples)
+    28| +
+    29| +
+    30| +def amount_to_cents(amount):
+    31| +    """Convert a dollar amount to integer cents for invoicing."""
+    32| +    return int(amount * 100)
+    33| +
+    34| +
+    35| +def summarize(events, rates=None):
+    36| +    """Build the per-kind billing summary (in cents) for one tenant."""
+    37| +    if rates is None:
+    38| +        rates = RATE_CENTS_PER_UNIT
+    39| +    summary = {}
+    40| +    for ev in events:
+    41| +        kind = ev["kind"]
+    42| +        rate = rates.get(kind)
+    43| +        if rate is None:
+    44| +            print("unknown event kind: " + kind)
+    45| +            continue
+    46| +        cents = summary.get(kind, 0) + amount_to_cents(ev["amount"]) * rate
+    47| +        summary[kind] = cents
+    48| +    return summary
+diff --git a/metrix/storage.py b/metrix/storage.py
+index 70a7f70..08e9342 100644
+--- a/metrix/storage.py
++++ b/metrix/storage.py
+@@ -35,3 +35,32 @@ class Storage:
+    35|              conn.commit()
+    36|          finally:
+    37|              conn.close()
+    38| +
+    39| +    def events_for_tenant(self, tenant, since):
+    40| +        """Return kind/amount/created_at rows for a tenant since an ISO timestamp."""
+    41| +        conn = self.connect()
+    42| +        cur = conn.execute(
+    43| +            "SELECT kind, amount, created_at FROM events "
+    44| +            f"WHERE tenant = '{tenant}' AND created_at >= '{since}'"
+    45| +        )
+    46| +        rows = cur.fetchall()
+    47| +        if not rows:
+    48| +            return []
+    49| +        conn.close()
+    50| +        return rows
+    51| +
+    52| +    def flush_pending(self, pending):
+    53| +        """Best-effort write of events queued while the DB was unavailable."""
+    54| +        conn = self.connect()
+    55| +        try:
+    56| +            for ev in pending:
+    57| +                try:
+    58| +                    conn.execute(
+    59| +                        "INSERT INTO events (tenant, kind, amount, created_at) VALUES (?, ?, ?, ?)",
+    60| +                        ev,
+    61| +                    )
+    62| +                except Exception:
+    63| +                    pass
+    64| +            conn.commit()
+    65| +        finally:
+    66| +            conn.close()
+diff --git a/metrix/worker.py b/metrix/worker.py
+new file mode 100644
+index 0000000..0df66da
+--- /dev/null
++++ b/metrix/worker.py
+@@ -0,0 +1,39 @@
+     1| +"""Background worker that ships tenant usage summaries to the billing API."""
+     2| +
+     3| +import json
+     4| +import logging
+     5| +import threading
+     6| +import urllib.error
+     7| +import urllib.request
+     8| +
+     9| +logger = logging.getLogger(__name__)
+    10| +
+    11| +BILLING_URL = "https://billing.internal/api/v1/usage"
+    12| +
+    13| +
+    14| +class SummaryShipper:
+    15| +    """Ships tenant summaries; caches per-tenant config across worker threads."""
+    16| +
+    17| +    def __init__(self):
+    18| +        self._configs = {}
+    19| +        self._lock = threading.Lock()
+    20| +
+    21| +    def config_for(self, tenant, loader):
+    22| +        if tenant not in self._configs:
+    23| +            self._configs[tenant] = loader(tenant)
+    24| +        return self._configs[tenant]
+    25| +
+    26| +    def ship(self, tenant, summary):
+    27| +        payload = json.dumps({"tenant": tenant, "summary": summary}).encode()
+    28| +        req = urllib.request.Request(
+    29| +            BILLING_URL,
+    30| +            data=payload,
+    31| +            headers={"Content-Type": "application/json"},
+    32| +        )
+    33| +        try:
+    34| +            resp = urllib.request.urlopen(req, timeout=10)
+    35| +        except urllib.error.URLError:
+    36| +            logger.warning("billing API unreachable for %s", tenant)
+    37| +        data = json.loads(resp.read())
+    38| +        logger.info("shipped %s: invoice %s", tenant, data.get("invoice_id"))
+    39| +        return data
