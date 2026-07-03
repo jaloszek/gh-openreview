@@ -35,6 +35,14 @@ that hard, in layers:
    - The `opencode-review` label can only be added by users with write access,
      so a maintainer must opt a fork PR in explicitly.
 
+## Data retention on the free tier
+
+The bundled default model runs on OpenCode Zen's free tier, and free-tier
+traffic may be used for model improvement/training (paid tiers are
+documented as zero-retention). If you review private or sensitive code, set
+`model`/`cheap-model` to a paid tier (e.g. `opencode/deepseek-v4-flash`)
+instead of relying on the free default.
+
 ## Recommendations for consumers
 
 - Prefer a repo/org **secret** named `OPENCODE_API_KEY`; never commit keys.

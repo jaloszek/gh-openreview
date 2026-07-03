@@ -9,6 +9,12 @@ Free by default (bundled free model), works with any OpenCode provider (OpenCode
 Zen, OpenAI-compatible gateways, AWS Bedrock via OIDC), and built so the **LLM
 pass never sees a GitHub token**.
 
+> **Data retention:** the bundled default model runs on OpenCode Zen's free
+> tier, and free-tier traffic may be used for model improvement/training
+> (paid tiers are documented as zero-retention). For private or sensitive
+> code, set `model`/`cheap-model` to a paid tier (e.g.
+> `opencode/deepseek-v4-flash`) instead of the free default.
+
 ## Quick start
 
 Add `.github/workflows/opencode-review.yml`:
