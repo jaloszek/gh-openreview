@@ -675,6 +675,57 @@ Context files: realistic PR body, 2-3 commit messages, no linked issue.
 - README fixture list gains one line for `kotlin/`.
 - `eval/run.sh --selftest` unaffected.
 
+## TASK-22 — Restart flag + engine fingerprint for the skip guard
+
+**Files:** `lib/gather.sh`, `lib/common.sh` (fingerprint helper),
+`lib/post.sh` (state field), `action/action.yml` (input + comment parsing),
+`README.md`.
+**Depends on:** TASK-16 (incremental review) being merged — implement on a
+branch based on the branch/commit that contains it (PR #10 /
+`feat/incremental-inline`), or on main after it merges.
+**Rationale:** (a) permanently-open eval PRs need repeatable fresh reviews
+without recreating the PR; (b) TASK-16's patch-id skip would wrongly skip
+re-review after PROMPT/MODEL changes — the engine changed even though the
+diff didn't.
+
+**Spec:**
+1. **`restart` input** (default `false`) → env `OPENREVIEW_RESTART`. When
+   `1`/`true`, `gather.sh`:
+   - does NOT parse the previous state block (log
+     `info "restart requested — ignoring previous review state"`),
+   - never writes the skip sentinel (even on matching patch-id),
+   - produces no incremental files,
+   - forces `prev-review.md` to `(no previous review)`.
+   Everything else unchanged: human threads still gathered, sticky comment
+   still edited in place, fresh state written by post.sh.
+2. **Comment trigger convenience**: in the ctx step of `action/action.yml`,
+   when the (already author-gated) trigger comment matches the trigger
+   phrase followed by the word `restart`
+   (`(^|[[:space:]])PHRASE[[:space:]]+restart([[:space:][:punct:]]|$)`),
+   export `OPENREVIEW_RESTART=1` for the run. Reuse the TASK-03 escaping
+   helper for the phrase.
+3. **Engine fingerprint**: new helper `engine_fingerprint` in `common.sh` —
+   a short stable hash (`cksum`-based, Bash 3.2-safe) over: the contents of
+   `lib/passes.sh`, the resolved main model name, and the resolved verify
+   model name. `post.sh` adds `"fp":"<hash>"` to the state JSON.
+   `gather.sh`'s skip-if-identical fires ONLY when BOTH `patch_id` AND `fp`
+   match (missing `fp` in old state ⇒ treat as mismatch ⇒ full review).
+   Log which factor invalidated the skip (`diff changed` vs
+   `engine changed`).
+4. README: document the input, the `@openreview restart` comment form, and
+   one sentence on the fingerprint rule ("skip only when neither the diff
+   nor the engine changed").
+
+**Acceptance criteria:**
+- With matching patch-id + fp and `restart=true`: full review path runs
+  (no sentinel), prev-review is the placeholder, and the state block is
+  rewritten (show with canned state + local run of gather's state logic).
+- With matching patch-id but different fp (touch `lib/passes.sh`): skip is
+  bypassed, log says engine changed.
+- With both matching and no restart: skip still fires (regression).
+- Comment `@openreview restart` sets the env var; plain `@openreview` does
+  not. `shellcheck` + `actionlint` pass.
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
