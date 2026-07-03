@@ -114,8 +114,13 @@ directory: the diff (with generated/vendored files excluded and a size cap), the
 title/body and changed files, the **linked issues** the PR closes (the
 requirement), the branch's **commit messages**, and **existing discussion** —
 inline review threads tagged `[OPEN]`/`[RESOLVED]` plus general comments — so the
-reviewer defers to humans and never repeats or re-raises a point. **The LLM
-passes read only those files — they never receive a GitHub token.**
+reviewer defers to humans and never repeats or re-raises a point. When other
+**open PRs** touch the same files, it also notes the overlap so the reviewer
+can flag concurrent/conflicting work. When a changed file has a recent
+(120-day) commit history matching `fix|bug|regress`, it also surfaces those
+commits as a **regression radar** so the reviewer checks the PR doesn't undo
+or bypass them (skipped silently on a shallow checkout). **The LLM passes
+read only those files — they never receive a GitHub token.**
 
 ### Incremental review
 

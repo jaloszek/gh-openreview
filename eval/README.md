@@ -217,3 +217,58 @@ pre-fix state as a fixture — the fix commit IS the golden finding.
 This repo's own `1b3e315` ("model input silently ignored") is a ready-made
 seed. ~5–10 replay fixtures make prompt A/B results meaningful; the planted
 fixtures stay the fast smoke gate.
+
+## Live playground PR
+
+Everything above runs against **frozen** context files — no GitHub, no
+token, no `gh` calls. That's fast and deterministic, but it can't exercise
+`lib/gather.sh`'s live fetches, `lib/post.sh`'s edit-in-place/prune logic,
+the sticky comment's state block, skip/incremental re-review behavior on
+follow-up pushes, or real GitHub-token scoping. For that we keep one
+permanently-open PR the action reviews for real.
+
+`eval/live-src/` holds the seed material: `base/` is the pre-PR project
+state, `head/` is the PR with **8 seeded bugs** documented (id, file, line,
+category, description) in `eval/live-src/BUGS.md` — the answer key. The bugs
+are deliberately different from `eval/fixtures/playground/` (and scored
+against a different golden file) so a hit here can't be confused with an
+offline fixture result.
+
+### One-time setup (maintainer only)
+
+This repo does not create or manage this PR automatically — a human does,
+and it must **stay open indefinitely** (do not merge or close it):
+
+```bash
+git checkout -b eval/live-playground main
+cp -R eval/live-src/base/metrix .
+git add metrix && git commit -m "chore: live playground base"
+cp -R eval/live-src/head/metrix .
+git add metrix && git commit -m "chore: live playground head (8 seeded bugs)"
+git push -u origin eval/live-playground
+gh pr create --draft --title "eval: live playground (do not merge)" \
+  --body "Permanently-open PR for exercising the live review pipeline. See eval/live-src/BUGS.md for the seeded bugs. Do not merge." \
+  --label do-not-merge --base main --head eval/live-playground
+```
+
+### Getting a fresh review
+
+Re-running the workflow against the same PR normally reuses prior state
+(skip/incremental behavior) — to force a full fresh pass while still
+editing the same sticky comment, either:
+
+- re-run the workflow manually with the `restart: true` input, or
+- comment `@openreview restart` on the PR (trusted authors only).
+
+### What this exercises that offline fixtures cannot
+
+- `lib/gather.sh` against a real PR (diff, PR meta, comments, commits) with
+  a real token.
+- `lib/post.sh` posting, then editing in place, then pruning stale bot
+  comments across re-runs.
+- The sticky comment's state block surviving across runs.
+- Skip/incremental review behavior on a no-op re-run vs. the `restart` path.
+- Real GitHub token scoping (the model passes still run without a token).
+
+**Note to the maintainer:** this task does not create the branch or PR — do
+that manually using the steps above, and keep it open indefinitely.

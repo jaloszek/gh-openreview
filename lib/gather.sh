@@ -352,6 +352,74 @@ OWNER="${OR_REPO%%/*}"; REPO="${OR_REPO##*/}"
 } > "$SCRATCH/pr-comments.md" 2>/dev/null || true
 [ -s "$SCRATCH/pr-comments.md" ] || echo "(no discussion yet)" > "$SCRATCH/pr-comments.md"
 
+# Open-PR cross-context: other OPEN PRs in the repo that touch the same files
+# as this PR — concurrent-change awareness. Best-effort; absent-silent (no
+# file written) on API error, no other open PRs, or no file overlap.
+rm -f "$SCRATCH/open-prs.md"
+OWN_FILES_SORTED=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json files --jq '.files[].path' 2>/dev/null | sort -u || true)
+if [ -n "$OWN_FILES_SORTED" ]; then
+  # One line per other open PR: number<TAB>title<TAB>comma-joined-file-paths.
+  gh pr list --repo "$OR_REPO" --state open --json number,title,files --limit 30 \
+    --jq --arg self "$OR_PR" '.[] | select((.number|tostring) != $self) | "\(.number)\t\(.title)\t\([.files[].path] | join(","))"' \
+    2>/dev/null > "$SCRATCH/.open-prs-raw.tsv" || true
+  if [ -s "$SCRATCH/.open-prs-raw.tsv" ]; then
+    : > "$SCRATCH/.open-prs-overlap.tsv"
+    while IFS="$(printf '\t')" read -r num title files; do
+      [ -n "$num" ] || continue
+      shared=$(comm -12 <(printf '%s\n' "$OWN_FILES_SORTED") <(printf '%s\n' "$files" | tr ',' '\n' | sort -u))
+      [ -n "$shared" ] || continue
+      nshared=$(printf '%s\n' "$shared" | grep -c .)
+      shared4=$(printf '%s\n' "$shared" | head -4 | paste -sd, -)
+      printf '%s\t%s\t%s\t%s\n' "$nshared" "$num" "$title" "$shared4" >> "$SCRATCH/.open-prs-overlap.tsv"
+    done < "$SCRATCH/.open-prs-raw.tsv"
+    if [ -s "$SCRATCH/.open-prs-overlap.tsv" ]; then
+      {
+        echo "## Other open PRs touching the same files"
+        sort -t "$(printf '\t')" -k1,1rn "$SCRATCH/.open-prs-overlap.tsv" | head -5 \
+          | while IFS="$(printf '\t')" read -r _n num title shared4; do
+              printf '#%s "%s" also touches: %s\n' "$num" "$title" "$shared4"
+            done
+      } > "$SCRATCH/open-prs.md"
+    fi
+    rm -f "$SCRATCH/.open-prs-overlap.tsv"
+  fi
+  rm -f "$SCRATCH/.open-prs-raw.tsv"
+fi
+if [ -s "$SCRATCH/open-prs.md" ]; then
+  info "open-PR overlap: $(($(wc -l < "$SCRATCH/open-prs.md" | tr -d ' ') - 1)) overlapping PR(s)"
+fi
+
+# Regression radar (TASK-31): for the PR's changed files, recent bug-fix commit
+# history — surfaced so the reviewer can check this PR doesn't undo or bypass
+# a recent fix. Requires full history; degrades silently on a shallow clone
+# (partial `git log --since` results on a shallow repo would be misleading).
+rm -f "$SCRATCH/regression-context.md"
+if [ "$(git -C "$OR_DIR" rev-parse --is-shallow-repository 2>/dev/null || echo true)" = "false" ]; then
+  CHANGED_FILES=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json files --jq '.files[].path' 2>/dev/null | head -20 || true)
+  if [ -n "$CHANGED_FILES" ]; then
+    : > "$SCRATCH/.regression-raw.tsv"
+    printf '%s\n' "$CHANGED_FILES" | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      git -C "$OR_DIR" log --since='120 days ago' -i -E --grep='fix|bug|regress' --format='%h %s' -n 3 -- "$f" 2>/dev/null \
+        | while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            printf '%s\t%s\n' "$f" "$line" >> "$SCRATCH/.regression-raw.tsv"
+          done
+    done
+    if [ -s "$SCRATCH/.regression-raw.tsv" ]; then
+      {
+        echo "## Files touched by this PR with recent bug-fix commits (last 120 days)"
+        awk -F'\t' '!seen[$2]++ { print $1 " — " $2 }' "$SCRATCH/.regression-raw.tsv"
+      } > "$SCRATCH/regression-context.md"
+    fi
+    rm -f "$SCRATCH/.regression-raw.tsv"
+  fi
+fi
+if [ -s "$SCRATCH/regression-context.md" ]; then
+  sanitize_text "$SCRATCH/regression-context.md"
+  info "regression radar: $(($(wc -l < "$SCRATCH/regression-context.md" | tr -d ' ') - 1)) recently-fixed file(s) touched"
+fi
+
 # Strip invisible-Unicode smuggling vectors from every fetched text context
 # file before the model sees it (pr-meta.json values are left alone).
 sanitize_text "$SCRATCH/pr.diff"
@@ -361,6 +429,74 @@ sanitize_text "$SCRATCH/linked-issues.md"
 sanitize_text "$SCRATCH/pr-commits.md"
 sanitize_text "$SCRATCH/pr-comments.md"
 sanitize_text "$SCRATCH/prev-review.md"
+[ -f "$SCRATCH/open-prs.md" ] && sanitize_text "$SCRATCH/open-prs.md"
+
+# Co-change coupling (TASK-32): mine the last 500 commits for files that
+# historically change together with this PR's changed files. Flag partners
+# with a strong co-change rate that this PR did NOT touch — a likely
+# forgotten companion change (migration, test, config, docs). Requires full
+# history; degrades silently on a shallow clone (partial history would give
+# misleading rates). Absent-silent: no file written when nothing qualifies.
+rm -f "$SCRATCH/co-change.md"
+if [ "$(git -C "$OR_DIR" rev-parse --is-shallow-repository 2>/dev/null || echo true)" = "false" ]; then
+  CHANGED_FILES=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json files --jq '.files[].path' 2>/dev/null || true)
+  if [ -n "$CHANGED_FILES" ]; then
+    CHANGED_LIST="$SCRATCH/.co-change-files.list"
+    printf '%s\n' "$CHANGED_FILES" > "$CHANGED_LIST"
+    git -C "$OR_DIR" log --no-merges --name-only --format='@%h' -500 \
+      | awk -v changed_list="$CHANGED_LIST" '
+        BEGIN {
+          while ((getline f < changed_list) > 0) { changed[f] = 1 }
+          close(changed_list)
+        }
+        /^@/ { if (ncommit > 0) flush(); ncommit++; nfiles = 0; next }
+        NF { files[nfiles++] = $0 }
+        function flush(   i, j, a, b) {
+          for (i = 0; i < nfiles; i++) {
+            a = files[i]
+            occ[a]++
+            for (j = 0; j < nfiles; j++) {
+              if (i == j) continue
+              b = files[j]
+              pair[a SUBSEP b]++
+            }
+          }
+        }
+        END {
+          if (nfiles > 0) flush()
+          for (a in changed) {
+            if (!(a in occ)) continue
+            for (key in pair) {
+              split(key, parts, SUBSEP)
+              if (parts[1] != a) continue
+              partner = parts[2]
+              if (partner in changed) continue
+              n = pair[key]
+              if (n < 5) continue
+              rate = n / occ[a]
+              if (rate < 0.6) continue
+              pct = int(rate * 100 + 0.5)
+              printf "%s\t%s\t%s\t%s\t%s\n", a, partner, pct, n, occ[a]
+            }
+          }
+        }
+      ' > "$SCRATCH/.co-change-raw.tsv"
+    if [ -s "$SCRATCH/.co-change-raw.tsv" ]; then
+      {
+        echo "## Historically coupled files not touched by this PR"
+        sort -t "$(printf '\t')" -k3,3rn "$SCRATCH/.co-change-raw.tsv" | head -8 \
+          | while IFS="$(printf '\t')" read -r a partner pct n occ; do
+              printf '%s usually changes together with %s (%s%% of %s commits) — not touched by this PR\n' "$a" "$partner" "$pct" "$occ"
+            done
+      } > "$SCRATCH/co-change.md"
+    fi
+    rm -f "$SCRATCH/.co-change-raw.tsv" "$CHANGED_LIST"
+  fi
+fi
+if [ -s "$SCRATCH/co-change.md" ]; then
+  sanitize_text "$SCRATCH/co-change.md"
+  info "co-change: $(($(wc -l < "$SCRATCH/co-change.md" | tr -d ' ') - 1)) coupled file(s) not touched"
+fi
 
 DIFF_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
 echo "DIFF_LINES=$DIFF_LINES" >> "$SCRATCH/metrics.env"
