@@ -12,7 +12,7 @@ METRICS="$SCRATCH/metrics.env"
 # Defaults so a partial run still reports something sane.
 DIFF_LINES=0 PREP_SECS=0 PASS1_SECS=0 PASS2_SECS=0
 OR_MODEL="" OR_VERIFY_MODEL="" OR_CHEAP_MODEL=""
-OR_FINDINGS_IMPORTANT=0 OR_FINDINGS_NIT=0 OR_FINDINGS_TOTAL=0
+OR_FINDINGS_IMPORTANT=0 OR_FINDINGS_NIT=0 OR_FINDINGS_TOTAL=0 FINDINGS_SUPPRESSED=0
 # shellcheck disable=SC1090
 [ -f "$METRICS" ] && . "$METRICS"
 
@@ -37,6 +37,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "| Metric | Value |"
     echo "|---|---|"
     echo "| Findings | **$OR_FINDINGS_IMPORTANT** important · $OR_FINDINGS_NIT nits |"
+    if [ "$FINDINGS_SUPPRESSED" -gt 0 ]; then
+      echo "| Suppressed by confidence gate | $FINDINGS_SUPPRESSED |"
+    fi
     echo "| Diff size | $DIFF_LINES lines |"
     if [ -n "$OR_CHEAP_MODEL" ]; then
       echo "| Prep (intent) | ${PREP_SECS}s ($OR_CHEAP_MODEL) |"

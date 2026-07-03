@@ -64,6 +64,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `trigger-label` | `opencode-review` | Label whose addition triggers a review. |
 | `marker-header` | `## 🤖 OpenCode Review` | First line of the posted comment; used for dedup. |
 | `bot-login` | `github-actions[bot]` | Comment author whose stale reviews are pruned. |
+| `min-confidence` | `low` | Minimum confidence (`low`/`med`/`high`) a finding must have to be rendered. Below-threshold findings are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting. |
 
 ## Outputs
 

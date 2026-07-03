@@ -58,6 +58,10 @@ inputs:
     description: "Comment author whose stale reviews are pruned."
     required: false
     default: "github-actions[bot]"
+  min-confidence:
+    description: "Minimum confidence (low|med|high) a finding must have to be rendered in the comment. Findings below the threshold are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting."
+    required: false
+    default: "low"
 
 outputs:
   findings-total:
@@ -238,6 +242,8 @@ runs:
       id: render
       if: steps.ctx.outputs.should_run == 'true' && steps.passes.outcome == 'success'
       shell: bash
+      env:
+        OPENREVIEW_MIN_CONF: ${{ inputs.min-confidence }}
       run: ${{ github.action_path }}/../lib/render.sh
 
     - name: Run metrics

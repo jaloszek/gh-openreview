@@ -27,6 +27,11 @@ set -euo pipefail
 : "${SCRATCH:?}"
 MARKER="${MARKER:-## 🤖 OpenCode Review}"
 NIT_CAP="${OPENREVIEW_NIT_CAP:-3}"
+MIN_CONF="${OPENREVIEW_MIN_CONF:-low}"
+case "$MIN_CONF" in
+  low|med|high) ;;
+  *) MIN_CONF="low" ;;
+esac
 IN="$SCRATCH/review-verified.md"
 OUT="$SCRATCH/opencode-review.md"
 [ -f "$IN" ] || printf '@@PRDESC\n' > "$IN"
@@ -60,11 +65,17 @@ PRDESC="$SCRATCH/.prdesc.md"
 awk -v prdesc="$PRDESC" '
   function flush() {
     if (have) {
+      # Defensive: unknown/missing conf is treated as low.
+      if (conf != "high" && conf != "med" && conf != "low") conf = "low"
+      orig_sev = sev
+      # Hard rule: a low-confidence finding is never rendered as Important —
+      # demote it to nit for rendering purposes (original sev kept for detail).
+      if (conf == "low" && sev == "important") sev = "nit"
       # severity rank then confidence rank -> stable, deterministic ordering
       sk = (sev=="important"?0:1) (conf=="high"?0:(conf=="med"?1:2))
       gsub(/\t/, " ", title); gsub(/\t/, " ", body)
       # NR is the input-order tie-breaker so same sev+conf findings sort stably.
-      printf "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", sk, sev, loc, conf, title, body, NR
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", sk, sev, loc, conf, title, body, NR, orig_sev
     }
     have=0; sev=""; loc=""; conf=""; title=""; body=""
   }
@@ -83,8 +94,23 @@ awk -v prdesc="$PRDESC" '
     else if (body != "")     { body = body " " $0 }
   }
   END { flush() }
-' "$IN" | LC_ALL=C sort -t$'\t' -k1,1 -k7,7n > "$TSV"
+' "$IN" | LC_ALL=C sort -t$'\t' -k1,1 -k7,7n > "$TSV.all"
 [ -f "$PRDESC" ] || : > "$PRDESC"
+
+# Confidence gate: drop findings below OPENREVIEW_MIN_CONF entirely (default
+# "low" = keep everything). Suppressed count is reported separately.
+n_suppressed=$(awk -F'\t' -v min="$MIN_CONF" '
+  function rank(c) { return (c=="high"?2:(c=="med"?1:0)) }
+  BEGIN { minr=rank(min) }
+  { if (rank($4) < minr) c++ }
+  END { print c+0 }
+' "$TSV.all")
+awk -F'\t' -v OFS='\t' -v min="$MIN_CONF" '
+  function rank(c) { return (c=="high"?2:(c=="med"?1:0)) }
+  BEGIN { minr=rank(min) }
+  { if (rank($4) >= minr) print }
+' "$TSV.all" > "$TSV"
+rm -f "$TSV.all"
 
 defang_file "$TSV"
 defang_file "$PRDESC"
@@ -143,13 +169,16 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     awk -F'\t' -v cap="$NIT_CAP" '
       BEGIN { i=0; nit=0 }
       {
-        sev=$2; loc=$3; conf=$4; title=$5; body=$6
+        sev=$2; loc=$3; conf=$4; title=$5; body=$6; orig_sev=$8
         if (sev=="nit") { nit++; if (nit>cap) next }
         i++
         printf "### %d. %s\n", i, title
         printf "%s\n\n", body
         printf "<details><summary>Details</summary>\n\n"
-        printf "- **Location:** `%s`\n- **Confidence:** %s\n</details>\n\n", loc, conf
+        printf "- **Location:** `%s`\n- **Confidence:** %s\n", loc, conf
+        if (orig_sev != sev)
+          printf "- **Original severity:** %s (demoted: low confidence)\n", orig_sev
+        printf "</details>\n\n"
       }
     ' "$TSV"
   fi
@@ -158,13 +187,17 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
   if [ "$PRDESC_RATING" != "good" ]; then
     printf '> 📝 PR description: **%s** — %s\n' "$PRDESC_RATING" "$PRDESC_REASON"
   fi
+  if [ "$n_suppressed" -gt 0 ]; then
+    printf '\n<sub>suppressed by confidence gate: %d</sub>\n' "$n_suppressed"
+  fi
 } > "$OUT"
 
-ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits)"
+ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits, ${n_suppressed} suppressed)"
 
 # Record finding counts for telemetry (metrics.sh -> step summary + outputs).
 {
   echo "OR_FINDINGS_IMPORTANT=$n_important"
   echo "OR_FINDINGS_NIT=$n_nit"
   echo "OR_FINDINGS_TOTAL=$n_total"
+  echo "FINDINGS_SUPPRESSED=$n_suppressed"
 } >> "$SCRATCH/metrics.env" 2>/dev/null || true
