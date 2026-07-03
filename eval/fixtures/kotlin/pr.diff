@@ -1,0 +1,251 @@
+diff --git a/src/Budget.kt b/src/Budget.kt
+new file mode 100644
+index 0000000..9af16c4
+--- /dev/null
++++ b/src/Budget.kt
+@@ -0,0 +1,86 @@
++package expensetracker
++
++import kotlinx.coroutines.GlobalScope
++import kotlinx.coroutines.async
++import kotlinx.coroutines.launch
++
++/**
++ * Tracks a monthly spending limit per category and warns when a category
++ * goes over. Limits are optional per category: a category with no
++ * configured limit is simply never flagged.
++ */
++class BudgetTracker {
++    lateinit var limits: Map<Category, Int>
++
++    fun initialize(limits: Map<Category, Int>) {
++        this.limits = limits
++    }
++
++    /** Cents remaining under the configured limit for [category]. */
++    fun remainingCents(ledger: Ledger, category: Category): Int {
++        val limit = limits[category]!!
++        return limit - ledger.totalForCategory(category)
++    }
++
++    fun isOverBudget(ledger: Ledger, category: Category): Boolean {
++        val limit = limits[category] ?: return false
++        return ledger.totalForCategory(category) > limit
++    }
++
++    /** Loads `CATEGORY:amountDollars` lines into a limits map. */
++    fun loadLimits(lines: List<String>): Map<Category, Int> {
++        val result = mutableMapOf<Category, Int>()
++        for (line in lines) {
++            val parsed = runCatching { parseLimitLine(line) }.getOrNull()
++            if (parsed != null) {
++                result[parsed.first] = parsed.second
++            }
++        }
++        return result
++    }
++
++    private fun parseLimitLine(line: String): Pair<Category, Int> {
++        val parts = line.trim().split(":")
++        val category = Category.valueOf(parts[0].trim().uppercase())
++        val cents = Parser.parseAmountCents(parts[1]) ?: error("bad amount")
++        return category to cents
++    }
++
++    /** True once at least one category has a configured limit. */
++    fun hasAnyLimit(): Boolean = limits.isNotEmpty()
++
++    /** The single category closest to going over its limit, if any is configured. */
++    fun closestToLimit(ledger: Ledger): Category? {
++        var closest: Category? = null
++        var closestRemaining = Int.MAX_VALUE
++        for (category in limits.keys) {
++            val remaining = limits.getValue(category) - ledger.totalForCategory(category)
++            if (remaining < closestRemaining) {
++                closestRemaining = remaining
++                closest = category
++            }
++        }
++        return closest
++    }
++}
++
++/**
++ * Shared log of budget alerts, appended to from a fan-out of per-category
++ * checks so the CLI can print them all together once every category has
++ * been evaluated.
++ */
++object BudgetAlerts {
++    val messages = mutableListOf<String>()
++
++    /** Kicks off one check per category concurrently and waits for all of them. */
++    suspend fun checkAllAsync(tracker: BudgetTracker, ledger: Ledger) {
++        val jobs = Category.values().map { category ->
++            GlobalScope.async {
++                if (tracker.isOverBudget(ledger, category)) {
++                    messages.add("over budget: ${Report.displayName(category)}")
++                }
++            }
++        }
++        jobs.forEach { it.await() }
++    }
++}
+diff --git a/src/Ledger.kt b/src/Ledger.kt
+index 5c1bfd0..aca8a22 100644
+--- a/src/Ledger.kt
++++ b/src/Ledger.kt
+@@ -12,7 +12,8 @@ enum class Category {
+     RENT,
+     UTILITIES,
+     ENTERTAINMENT,
+-    MISC
++    MISC,
++    TRANSPORT
+ }
+ 
+ /**
+diff --git a/src/Main.kt b/src/Main.kt
+index e1d1ba9..3f3653c 100644
+--- a/src/Main.kt
++++ b/src/Main.kt
+@@ -1,14 +1,16 @@
+ package expensetracker
+ 
+ import java.time.LocalDate
++import kotlinx.coroutines.runBlocking
+ 
+ /**
+  * Entry point for the expense tracker CLI.
+  *
+  * Usage:
+  *   expensetracker add FOOD 12.50 "lunch" 2024-03-01
+- *   expensetracker report
++ *   expensetracker report [monthly]
+  *   expensetracker import expenses.txt
++ *   expensetracker budget <limits-file>
+  */
+ fun main(args: Array<String>) {
+     val ledger = Ledger()
+@@ -20,9 +22,10 @@ fun main(args: Array<String>) {
+ 
+     when (args[0]) {
+         "add" -> handleAdd(ledger, args)
+-        "report" -> handleReport(ledger)
++        "report" -> handleReport(ledger, args)
+         "import" -> handleImport(ledger, args)
+         "remove" -> handleRemove(ledger, args)
++        "budget" -> handleBudget(ledger, args)
+         else -> printUsage()
+     }
+ }
+@@ -61,13 +64,50 @@ private fun handleAdd(ledger: Ledger, args: Array<String>) {
+     }
+     val date = Parser.parseDate(args[4]) ?: LocalDate.now()
+     val expense = ledger.add(category, amountCents, args[3], date)
++    if (category === Category.MISC) {
++        println("note: consider a more specific category than misc")
++    }
+     println("added #${expense.id}")
+ }
+ 
+-private fun handleReport(ledger: Ledger) {
++private fun handleReport(ledger: Ledger, args: Array<String>) {
+     print(Report.categoryBreakdown(ledger))
+     println(Report.total(ledger))
+     print(Report.recent(ledger, 5))
++
++    // "report monthly" adds the budget-aware monthly summary. The plain
++    // "report" (or any other second argument) skips it.
++    val mode = args.getOrNull(1)
++    if (mode == "monthly") {
++        val tracker = BudgetTracker()
++        print(Report.monthlySummary(ledger, tracker, LocalDate.now()))
++    }
++}
++
++private fun handleBudget(ledger: Ledger, args: Array<String>) {
++    if (args.size < 2) {
++        println("usage: budget <limits-file>")
++        return
++    }
++    val tracker = BudgetTracker()
++    val lines = java.io.File(args[1]).readLines()
++    tracker.initialize(tracker.loadLimits(lines))
++    if (!tracker.hasAnyLimit()) {
++        println("no valid budget limits found in ${args[1]}")
++        return
++    }
++    runBlocking {
++        BudgetAlerts.checkAllAsync(tracker, ledger)
++    }
++    if (BudgetAlerts.messages.isEmpty()) {
++        println("all categories within budget")
++    } else {
++        BudgetAlerts.messages.forEach { println(it) }
++    }
++    val closest = tracker.closestToLimit(ledger)
++    if (closest != null) {
++        println("closest to its limit: ${Report.displayName(closest)}")
++    }
+ }
+ 
+ private fun handleImport(ledger: Ledger, args: Array<String>) {
+diff --git a/src/Report.kt b/src/Report.kt
+index 05dce77..c3f6c6b 100644
+--- a/src/Report.kt
++++ b/src/Report.kt
+@@ -1,5 +1,7 @@
+ package expensetracker
+ 
++import java.time.LocalDate
++
+ /**
+  * Human-readable summaries built from a [Ledger]. Kept free of any I/O so
+  * it can be unit tested against an in-memory ledger.
+@@ -64,4 +66,46 @@ object Report {
+         }
+         return sb.toString()
+     }
++
++    /** Short tag used to group categories in the monthly summary header. */
++    private fun budgetGroup(category: Category): String {
++        var group = ""
++        when (category) {
++            Category.FOOD -> group = "essential"
++            Category.RENT -> group = "essential"
++            Category.UTILITIES -> group = "essential"
++            Category.ENTERTAINMENT -> group = "discretionary"
++            Category.MISC -> group = "discretionary"
++        }
++        return group
++    }
++
++    /** The month's total, average-per-day, and remaining budget per category. */
++    fun monthlySummary(ledger: Ledger, tracker: BudgetTracker, today: LocalDate): String {
++        val month = ledger.inMonth(today.year, today.monthValue)
++        val monthTotal = month.sumOf { it.amountCents }
++        val avgPerDayCents = monthTotal / today.dayOfMonth
++
++        val sb = StringBuilder()
++        sb.appendLine("Monthly summary (${today.year}-${today.monthValue}):")
++        sb.appendLine("  total: ${formatCents(monthTotal)}, avg/day: ${formatCents(avgPerDayCents)}")
++        for (category in Category.values()) {
++            val remaining = tracker.remainingCents(ledger, category)
++            sb.appendLine("  [${budgetGroup(category)}] ${displayName(category)}: ${formatCents(remaining)} remaining")
++        }
++        return sb.toString()
++    }
++
++    /** Renders the top [count] expenses of the month by amount, largest first. */
++    fun topExpensesThisMonth(ledger: Ledger, today: LocalDate, count: Int): String {
++        val month = ledger.inMonth(today.year, today.monthValue).sortedByDescending { it.amountCents }
++        val limit = minOf(count, month.size)
++        val sb = StringBuilder()
++        sb.appendLine("Top expenses this month:")
++        for (i in 0..limit) {
++            val expense = month[i]
++            sb.appendLine("  #${expense.id} ${formatCents(expense.amountCents)} - ${expense.description}")
++        }
++        return sb.toString()
++    }
+ }

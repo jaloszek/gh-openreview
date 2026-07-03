@@ -92,6 +92,15 @@ gitignored.
   `eval/golden/noisy.expect` requires catching the 3 criticals
   (`MUST_CATCH=C01,C02,C03`) within a noise budget (`MAX_NITS=3`,
   `MAX_TOTAL=12`).
+- **`kotlin/`** — multi-language coverage: an invented Kotlin console-app
+  expense tracker (`Main.kt`/`Ledger.kt`/`Parser.kt`/`Report.kt`) gets a
+  "feat: add budgets and monthly report" PR planting **8 bugs**, mostly
+  Kotlin-specific (`!!` on a legitimately-nullable lookup, a `lateinit var`
+  read before `initialize()`, `===` vs `==`, a `when` over an enum made
+  non-exhaustive by a newly added case, integer division in money math, a
+  dropped `runCatching` failure, an unsynchronized `MutableList` shared
+  across coroutines, an off-by-one `until`/`..` swap). Answer key:
+  `eval/golden/kotlin.tsv`; recall-only, no expect file, like `playground`.
 
 ## Design rationale — the three review scenarios
 
