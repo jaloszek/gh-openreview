@@ -834,6 +834,50 @@ live validation happens on first org install.
 - The dispatch workflow contains NO `pull_request_target` and never exposes
   the App private key beyond the token-mint step.
 
+## TASK-25 — Eval fidelity: fixture source trees
+
+**Files:** `eval/run.sh`, every `eval/fixtures/<name>/` (new `tree/` dir),
+`eval/freeze.sh` (consistency check), `eval/README.md`.
+**Motivation (found by the first full-suite run, 2026-07-03):** fixtures are
+scratch snapshots only — the invented project's source files do NOT exist in
+the run dir. The agentic model is told it may open changed files for context;
+when it does, it finds an empty tree and (correctly, from its view) reports
+phantom problems. Concretely: the `quiet` fixture failed its
+`MAX_IMPORTANTS=0` budget with "imports reference nonexistent modules —
+`metrix/` doesn't exist", which is a **harness artifact, not an engine
+failure**. All fixtures' numbers are potentially tainted the same way.
+
+**Spec:**
+1. Each fixture gains `tree/` — the **post-PR state** of the invented
+   project: every file the diff touches (with the diff applied) plus any
+   module the code imports/references, so the checkout looks like a real PR
+   head. Author them by applying each fixture's `pr.diff` to the invented
+   base sources (for `playground`/`quiet`/`subtle`/`noisy` reuse the shared
+   `metrix` project; `kotlin` gets its `src/*.kt`; `clean` gets its
+   renamed files). Verify per fixture: for every file in the diff, the
+   `tree/` copy's content around each hunk matches the hunk's new-side
+   lines (write a small check into `freeze.sh` — compare each hunk's added/
+   context lines against the tree file at the hunk's line offsets; fail
+   loudly on mismatch).
+2. `eval/run.sh`: copy `tree/` contents into the run dir ROOT (the project
+   dir opencode sees) before the git-init step; scratch files keep going to
+   `.openreview-tmp/` as today. Fixtures without `tree/` keep working (warn
+   once: "no tree/ — agentic file reads will see an empty project").
+3. README: document `tree/` in "Adding a fixture" and in the replay-fixture
+   recipe (for replays, `tree/` = the real PR-head checkout of touched
+   files).
+4. Live spot-check (opencode + free model available locally): re-run the
+   `quiet` fixture once — the phantom-imports important finding must
+   disappear; include the result in the summary. (If credentials are
+   unavailable, say so; the structural checks are the merge gate.)
+
+**Acceptance criteria:**
+- All 6 fixtures have `tree/`; `freeze.sh`'s new consistency check passes
+  for all of them and fails loudly on a doctored mismatch (show both).
+- `eval/run.sh --selftest` still passes; runs copy the tree into place.
+- `shellcheck -S warning eval/*.sh` clean.
+- Quiet live re-run evidence (or explicit note that creds were absent).
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
