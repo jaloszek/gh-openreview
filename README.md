@@ -61,7 +61,8 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | Input | Default | Purpose |
 |---|---|---|
 | `opencode-api-key` | `""` | OpenCode Zen API key. Omit when supplying provider creds another way (e.g. AWS env/OIDC for Bedrock). |
-| `opencode-config` | `""` | Path to an `opencode.json`. Falls back to the consumer repo's config, then the bundled free-model config. |
+| `opencode-config` | `""` | Path to an `opencode.json`. Falls back to the consumer repo's config, then the bundled free-model config. By default this resolved config is merged with the bundled hardened `tools`/`permission` maps (see below) unless `trust-repo-config` is true. |
+| `trust-repo-config` | `false` | `true` uses the resolved consumer/user config verbatim instead of merging it with the bundled hardened `tools`/`permission` maps. |
 | `model` | `opencode/deepseek-v4-flash-free` | Model id for the analysis (generate) pass. |
 | `cheap-model` | `""` | Small/fast/free model the engine routes prep work to (intent compression) and uses as the default verify tier. Empty disables cheap routing. |
 | `verify-model` | `""` | Model id for the verification pass. Empty falls back to `cheap-model`, then `model`. |
@@ -199,6 +200,14 @@ decided by the model-ID prefix, not your account**:
 **Config precedence** (your own config is never overwritten): `opencode-config`
 input → consumer repo `./opencode.json` → `~/.config/opencode/` → the bundled
 default (used only when none of the above exist).
+
+When a consumer/user config is resolved this way, it is not used verbatim by
+default: the engine merges it with the bundled hardened config, forcing the
+`tools` and `permission` maps wholesale (so a consumer cannot re-enable
+bash/webfetch/etc. piecemeal) and dropping any `mcp` key. Everything else
+(provider, model, instructions, agent, theme…) passes through untouched. Set
+`trust-repo-config: true` to use the resolved config verbatim instead (see
+[SECURITY.md](SECURITY.md)).
 
 ## Security
 

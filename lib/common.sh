@@ -106,6 +106,11 @@ $(cat "$f")"
 # --- opencode config precedence ----------------------------------------------
 # Respect a user's config; only fall back to the bundled one when none exists.
 #   OPENCODE_CONFIG env > project ./opencode.json(c) > ~/.config/opencode > bundled
+# By default a consumer config found this way is not used verbatim: it is
+# merged with the bundled hardened tools/permission maps forced wholesale (see
+# _merge_effective_config below), so a consumer repo can no longer silently
+# weaken the sandbox. Set OPENREVIEW_TRUST_REPO_CONFIG=true to restore the
+# pre-merge behavior (consumer config used verbatim).
 # Warn (log + ::notice::) that config resolution picked <path> instead of the
 # bundled hardened config, and best-effort flag a missing bash deny/false.
 _warn_config_replacement() {
@@ -124,28 +129,98 @@ _warn_config_replacement() {
   fi
 }
 
-prepare_opencode_config() {
-  local dir="${1:-$PWD}"
-  if [ -n "${OPENCODE_CONFIG:-}" ]; then
-    _warn_config_replacement "$OPENCODE_CONFIG"
+
+# --- merged effective config (TASK-29) ---------------------------------------
+# _merge_effective_config <consumer_config_path>: build
+# $SCRATCH/opencode-effective.json = consumer config with the bundled
+# tools/permission maps forced wholesale (no deep-merge — a consumer cannot
+# re-enable anything piecemeal) and any mcp key dropped. Everything else in
+# the consumer config passes through untouched. Prefers jq, falls back to
+# python3, and if neither is available falls back to the bundled config
+# outright (safe direction) with a warn. Never fails the run over the merge.
+# Sets OPENCODE_CONFIG to the resulting path on success.
+_merge_effective_config() {
+  local consumer="$1" bundled="$OPENREVIEW_ROOT/opencode.json" out
+  if [ -z "${SCRATCH:-}" ]; then
+    warn "SCRATCH not set; cannot write merged config — falling back to bundled config"
+    export OPENCODE_CONFIG="$bundled"
     return
   fi
-  if [ -f "$dir/opencode.json" ]; then
-    _warn_config_replacement "$dir/opencode.json"
-    return
-  fi
-  if [ -f "$dir/opencode.jsonc" ]; then
-    _warn_config_replacement "$dir/opencode.jsonc"
-    return
-  fi
-  local g
-  for g in "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.jsonc"; do
-    if [ -f "$g" ]; then
-      _warn_config_replacement "$g"
+  out="$SCRATCH/opencode-effective.json"
+  if command -v jq >/dev/null 2>&1; then
+    if jq -s '.[0] as $c | .[1] as $b | ($c | del(.mcp)) * {tools: $b.tools, permission: $b.permission}' \
+      "$consumer" "$bundled" >"$out" 2>/dev/null; then
+      export OPENCODE_CONFIG="$out"
+      info "merged consumer config with hardened security keys (tools/permission forced, mcp dropped)"
       return
     fi
-  done
-  export OPENCODE_CONFIG="$OPENREVIEW_ROOT/opencode.json"
+    warn "jq merge of $consumer failed — falling back to bundled config"
+    export OPENCODE_CONFIG="$bundled"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    if CONSUMER="$consumer" BUNDLED="$bundled" OUT="$out" python3 -c '
+import json, os
+with open(os.environ["CONSUMER"]) as f:
+    c = json.load(f)
+with open(os.environ["BUNDLED"]) as f:
+    b = json.load(f)
+c.pop("mcp", None)
+c["tools"] = b["tools"]
+c["permission"] = b["permission"]
+with open(os.environ["OUT"], "w") as f:
+    json.dump(c, f, indent=2)
+' 2>/dev/null; then
+      export OPENCODE_CONFIG="$out"
+      info "merged consumer config with hardened security keys (tools/permission forced, mcp dropped)"
+      return
+    fi
+    warn "python3 merge of $consumer failed — falling back to bundled config"
+    export OPENCODE_CONFIG="$bundled"
+    return
+  fi
+  warn "neither jq nor python3 available — cannot merge $consumer safely; falling back to bundled config"
+  export OPENCODE_CONFIG="$bundled"
+}
+
+# trust_repo_config: OPENREVIEW_TRUST_REPO_CONFIG (env) / trust-repo-config
+# (action input, fed through the same env var). true restores pre-TASK-29
+# behavior (consumer config used verbatim, TASK-12 warning only).
+_trust_repo_config() {
+  case "${OPENREVIEW_TRUST_REPO_CONFIG:-false}" in
+    1 | true | TRUE | True) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_opencode_config() {
+  local dir="${1:-$PWD}"
+  local consumer=""
+  if [ -n "${OPENCODE_CONFIG:-}" ]; then
+    consumer="$OPENCODE_CONFIG"
+  elif [ -f "$dir/opencode.json" ]; then
+    consumer="$dir/opencode.json"
+  elif [ -f "$dir/opencode.jsonc" ]; then
+    consumer="$dir/opencode.jsonc"
+  else
+    local g
+    for g in "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.jsonc"; do
+      if [ -f "$g" ]; then
+        consumer="$g"
+        break
+      fi
+    done
+  fi
+  if [ -z "$consumer" ]; then
+    export OPENCODE_CONFIG="$OPENREVIEW_ROOT/opencode.json"
+    return
+  fi
+  if _trust_repo_config; then
+    _warn_config_replacement "$consumer"
+    export OPENCODE_CONFIG="$consumer"
+    return
+  fi
+  _merge_effective_config "$consumer"
 }
 
 # --- opencode invocation -----------------------------------------------------
