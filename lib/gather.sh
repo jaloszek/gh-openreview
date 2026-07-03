@@ -431,6 +431,73 @@ sanitize_text "$SCRATCH/pr-comments.md"
 sanitize_text "$SCRATCH/prev-review.md"
 [ -f "$SCRATCH/open-prs.md" ] && sanitize_text "$SCRATCH/open-prs.md"
 
+# Co-change coupling (TASK-32): mine the last 500 commits for files that
+# historically change together with this PR's changed files. Flag partners
+# with a strong co-change rate that this PR did NOT touch — a likely
+# forgotten companion change (migration, test, config, docs). Requires full
+# history; degrades silently on a shallow clone (partial history would give
+# misleading rates). Absent-silent: no file written when nothing qualifies.
+rm -f "$SCRATCH/co-change.md"
+if [ "$(git -C "$OR_DIR" rev-parse --is-shallow-repository 2>/dev/null || echo true)" = "false" ]; then
+  CHANGED_FILES=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json files --jq '.files[].path' 2>/dev/null || true)
+  if [ -n "$CHANGED_FILES" ]; then
+    CHANGED_LIST="$SCRATCH/.co-change-files.list"
+    printf '%s\n' "$CHANGED_FILES" > "$CHANGED_LIST"
+    git -C "$OR_DIR" log --no-merges --name-only --format='@%h' -500 \
+      | awk -v changed_list="$CHANGED_LIST" '
+        BEGIN {
+          while ((getline f < changed_list) > 0) { changed[f] = 1 }
+          close(changed_list)
+        }
+        /^@/ { if (ncommit > 0) flush(); ncommit++; nfiles = 0; next }
+        NF { files[nfiles++] = $0 }
+        function flush(   i, j, a, b) {
+          for (i = 0; i < nfiles; i++) {
+            a = files[i]
+            occ[a]++
+            for (j = 0; j < nfiles; j++) {
+              if (i == j) continue
+              b = files[j]
+              pair[a SUBSEP b]++
+            }
+          }
+        }
+        END {
+          if (nfiles > 0) flush()
+          for (a in changed) {
+            if (!(a in occ)) continue
+            for (key in pair) {
+              split(key, parts, SUBSEP)
+              if (parts[1] != a) continue
+              partner = parts[2]
+              if (partner in changed) continue
+              n = pair[key]
+              if (n < 5) continue
+              rate = n / occ[a]
+              if (rate < 0.6) continue
+              pct = int(rate * 100 + 0.5)
+              printf "%s\t%s\t%s\t%s\t%s\n", a, partner, pct, n, occ[a]
+            }
+          }
+        }
+      ' > "$SCRATCH/.co-change-raw.tsv"
+    if [ -s "$SCRATCH/.co-change-raw.tsv" ]; then
+      {
+        echo "## Historically coupled files not touched by this PR"
+        sort -t "$(printf '\t')" -k3,3rn "$SCRATCH/.co-change-raw.tsv" | head -8 \
+          | while IFS="$(printf '\t')" read -r a partner pct n occ; do
+              printf '%s usually changes together with %s (%s%% of %s commits) — not touched by this PR\n' "$a" "$partner" "$pct" "$occ"
+            done
+      } > "$SCRATCH/co-change.md"
+    fi
+    rm -f "$SCRATCH/.co-change-raw.tsv" "$CHANGED_LIST"
+  fi
+fi
+if [ -s "$SCRATCH/co-change.md" ]; then
+  sanitize_text "$SCRATCH/co-change.md"
+  info "co-change: $(($(wc -l < "$SCRATCH/co-change.md" | tr -d ' ') - 1)) coupled file(s) not touched"
+fi
+
 DIFF_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
 echo "DIFF_LINES=$DIFF_LINES" >> "$SCRATCH/metrics.env"
 info "context: $DIFF_LINES diff lines, $(wc -l < "$SCRATCH/prev-review.md" | tr -d ' ') prev-review lines"
