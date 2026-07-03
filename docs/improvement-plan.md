@@ -85,6 +85,37 @@ Patterns we already ship that the research confirms as best practice:
 
 ---
 
+## Decisions log (2026-07-03)
+
+Ten roadmap questions decided (yes/no round with pawel):
+
+1. **Default model stays free** (`opencode/deepseek-v4-flash-free`) — add a
+   prominent README/SECURITY warning that free-tier traffic may be used for
+   model training; recommend paid tiers for private code.
+2. **Inline comments ship opt-in** (`comment-style: summary` default); flip
+   the default only after anchor validation proves reliable on real PRs.
+3. **COMMENT-only forever** — the bot never posts APPROVE/REQUEST_CHANGES.
+4. **Sticky comment → edit-in-place** (item S approved), optional ping
+   comment for notification-wanting teams.
+5. **PRDESC redesigned into a rating** (see item PD below): instead of
+   generating a suggested description, rate the existing one —
+   `good` / `could-be-improved` / `poor` — and only render when not `good`.
+   Criteria: `poor` = empty, extremely outdated, or contradicts the diff;
+   `could-be-improved` = major gaps but mergeable; `good` = everything else.
+   Kills most of the PRDESC injection-echo surface and its token cost.
+6. **Auto-review on every push stays the default**, made cheap by
+   incremental review (item G) once it lands.
+7. **Engine refactors onto opencode named agents** (review-generate /
+   review-verify in `opencode.json`, per-agent model/tools, prompts as
+   files) — approved; land with/after Tier 0 since it touches the same
+   config.
+8. **Org epic keeps its wave-4 slot** — quality floor first, org rollout
+   after.
+9. **Eval: playground + clean control first**; replay fixtures added
+   incrementally after the harness proves itself.
+10. **Knowledge base lives in the hub fork itself** (§3.4 confirmed as the
+    default; separate memory repo demoted to alternative).
+
 ## Part 1 — Backlog, re-prioritized
 
 Goal tags: 💸 cost · 🔮 predictability · 🛡️ robustness · 🎯 quality ·
@@ -168,6 +199,24 @@ Latent problems in the *current* code, found while de-risking the roadmap
   4. append the names of files that did NOT fit
      (`Files not shown (budget): …`) — **the model must always know what it
      could not see** (today the tail of the diff silently vanishes).
+
+- **PD. PR-description rating (replaces the PRDESC suggestion) 🎯💸**
+  *(decided 2026-07-03 — see Decisions log #5).* The `@@PRDESC` block becomes
+  a two-line record: `rating: good|could-be-improved|poor` + `reason:` (one
+  line, only for non-good). Prompt criteria: `poor` = empty/extremely
+  outdated/contradicts the diff; `could-be-improved` = major gaps but
+  mergeable; `good` = everything else. `render.sh` skips the section
+  entirely on `good`, otherwise renders a small "📝 PR description: <rating>
+  — <reason>" note. No description text is ever generated or echoed —
+  removes most of the PRDESC injection surface and its output tokens.
+
+- **AG. opencode named-agents engine refactor 🔮🛡️**
+  *(decided 2026-07-03 — Decisions log #7).* Define `review-generate` and
+  `review-verify` agents in the bundled `opencode.json` (per-agent `model`,
+  `tools`, `permission`, `prompt: {file:./prompts/…}`); `passes.sh` invokes
+  `opencode run --agent <name>` instead of assembling giant prompt strings.
+  Prompts become versioned files; each pass gets its own tool lockdown.
+  Land together with / right after T0-1 (same config file).
 
 ### Tier 2 — medium effort, high value
 

@@ -21,9 +21,9 @@ facts referenced as `IN §n` live in `implementation-notes.md`.
   `SECURITY.md` first if the task touches `action/action.yml`.
 - One task = one focused commit (`fix:`/`feat:`/`docs:` conventional prefix).
 
-Recommended execution order: 01 → 02 → 03 → 04 → 05 → 06 → 08 → 07 → 10 →
-11 → 09 (09 is the largest; 12 is independent). Dependencies are noted per
-task; tasks without a dependency note are independent.
+Recommended execution order: 01 → 02 → 03 → 04 → 05 → 13 → 06 → 08 → 07 →
+10 → 11 → 09 (09 is the largest; 12 is independent). Dependencies are noted
+per task; tasks without a dependency note are independent.
 
 ---
 
@@ -346,14 +346,86 @@ precedence is a documented contract; do not alter it).
   exactly one notice; a project config without a bash denial triggers the
   second, specific warning. `shellcheck` passes.
 
+## TASK-13 — PR-description rating replaces the PRDESC suggestion (plan item PD)
+
+**Files:** `lib/passes.sh` (FORMAT_SPEC + both prompts), `lib/render.sh`.
+**Decided design (Decisions log #5 in `improvement-plan.md`) — no judgment
+calls needed.**
+
+**Spec:**
+1. In `FORMAT_SPEC`, replace the `@@PRDESC` trailer definition with:
+   ```
+   Then ALWAYS end the file with exactly:
+   @@PRDESC
+   rating: good | could-be-improved | poor
+   reason: one short line explaining the rating (omit this line when rating is good)
+   ```
+   Criteria to state in the spec text: `poor` = the PR description is empty,
+   extremely outdated, or contradicts what the diff actually does;
+   `could-be-improved` = major gaps but acceptable to merge as-is;
+   `good` = everything else. The model must NOT write a replacement
+   description — rating + reason only.
+2. `render.sh`: parse the two fields defensively (unknown/missing rating →
+   treat as `good`, i.e. render nothing). On `poor` or `could-be-improved`,
+   render one line at the end of the comment:
+   `> 📝 PR description: **<rating>** — <reason>` (reason passes through the
+   TASK-05 egress sanitizer). Remove the old collapsed
+   "Suggested PR description" block and its `.prdesc.md` plumbing.
+3. Verify pass: no change needed beyond the shared FORMAT_SPEC (the verify
+   prompt reuses it); confirm it does not re-rate.
+
+**Acceptance criteria:**
+- A findings file with `rating: good` renders no description section; `poor`
+  + reason renders the single quoted line; missing/garbled trailer renders
+  nothing and does not break finding parsing.
+- No code path generates or echoes a suggested description anymore.
+- `shellcheck` passes; eval fixture (TASK-09) golden flow unaffected.
+
+## TASK-14 — Edit-in-place sticky comment (plan item S; decided 2026-07-03)
+
+**Files:** `lib/post.sh`, `action/action.yml` (new input), `README.md`.
+**Facts (verified IN §2):** `PATCH /repos/{o}/{r}/issues/comments/{id}`
+updates a comment; editing does not notify watchers; body limit 65,536 chars
+(budget 60k).
+
+**Spec:**
+1. `post.sh`: instead of always creating a new comment and pruning old ones —
+   find the newest existing comment by `AUTHOR_LOGIN` containing
+   `MARKER_MATCH`; if found, `PATCH` its body with the fresh
+   `opencode-review.md`; if none, `POST` a new one. Keep the existing prune
+   loop only for *extra* duplicates (older marker comments beyond the one
+   edited/created). Append a final line to the body:
+   `_Updated for commit <head-sha> at <UTC timestamp>_` (head SHA from
+   `pr-meta.json`/env; add it to gather's meta fetch if absent).
+2. Truncate the body deterministically at 60,000 chars with a
+   `[comment truncated]` marker before posting (never let the API 422).
+3. New action input `update-ping` (default `false`): when `true` and the run
+   *edited* an existing comment and has ≥1 important finding, post a
+   one-line extra comment `🔔 Review updated — <n> important finding(s); see
+   the review comment above.` (this one is not marker-tagged and is pruned
+   on the next run).
+4. Local (non-CI) behavior unchanged in spirit: same logic via `gh api`.
+
+**Acceptance criteria:**
+- Two consecutive runs on the same PR produce ONE marker comment whose body
+  reflects the second run and whose comment id is unchanged.
+- First-ever run creates the comment; `update-ping: true` adds the ping only
+  on updates with important findings; next run removes stale pings.
+- Oversized render output is truncated, not failed. `shellcheck` +
+  `actionlint` pass.
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
-- **G (incremental review)** — force-push edge cases + state schema design.
-- **J (inline comments)** — posting UX decisions (default mode, verdicts).
-- **S (edit-in-place)** — depends on a notification-behavior decision.
+- **G (incremental review)** — force-push edge cases + state-block schema
+  design (builds on TASK-14).
+- **J (inline comments)** — decided opt-in + COMMENT-only, but anchor
+  fallback UX and review-batching details still need design (needs TASK-08
+  in place first).
 - **T (cheap triage)** — routing thresholds + prompt design tuning.
+- **AG (named-agents refactor)** — decided, but it restructures the engine
+  core; keep with the maintainer or a strong agent, not a simple handoff.
 - **Part 3 (org dispatch, App, hub knowledge base)** — org setup is human
   work; harvest/warmup design still needs decisions.
 - **V/U/W/N/O/L′, Tier 4 (Y/Z/AA)** — design open or eval-dependent.
