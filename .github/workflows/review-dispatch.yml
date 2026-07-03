@@ -1,0 +1,86 @@
+# Org-wide manual-invocation reviewer: mint a short-lived GitHub App
+# installation token scoped to a single target repo, check that repo out, and
+# run this repo's own action against it. Lets one fork of this repo review
+# any PR in any repo the App is installed on, without per-repo setup.
+#
+# One-time setup required before this workflow can run: docs/org-setup.md.
+name: Review dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target repo within the org (owner/repo)"
+        required: true
+      pr:
+        description: "PR number in the target repo"
+        required: true
+      restart:
+        description: "Force a full fresh review, ignoring previous state"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required App credentials are configured
+        shell: bash
+        run: |
+          missing=false
+          if [ -z "${{ vars.REVIEWER_APP_CLIENT_ID }}" ]; then
+            echo "::error::vars.REVIEWER_APP_CLIENT_ID is not set — see docs/org-setup.md"
+            missing=true
+          fi
+          if [ -z "${{ secrets.REVIEWER_APP_PRIVATE_KEY }}" ]; then
+            echo "::error::secrets.REVIEWER_APP_PRIVATE_KEY is not set — see docs/org-setup.md"
+            missing=true
+          fi
+          [ "$missing" = "false" ]
+
+      - name: Resolve target repo name
+        id: target
+        shell: bash
+        env:
+          REPO_INPUT: ${{ inputs.repo }}
+        run: |
+          echo "name=${REPO_INPUT##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint App installation token (scoped to the target repo)
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.REVIEWER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      # This repo's own code (the action definition), checked out into the
+      # workspace root.
+      - uses: actions/checkout@v6
+
+      # The repo under review, checked out into `target/` using the minted
+      # token so the action can read/diff/comment on it.
+      - name: Checkout target repo PR
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.repo }}
+          ref: refs/pull/${{ inputs.pr }}/head
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          path: target
+
+      - uses: ./action
+        with:
+          target-repo: ${{ inputs.repo }}
+          pr-number: ${{ inputs.pr }}
+          target-dir: target
+          restart: ${{ inputs.restart }}
+          github-token: ${{ steps.app-token.outputs.token }}
+          opencode-api-key: ${{ secrets.OPENCODE_API_KEY }}
+          model: ${{ vars.OPENREVIEW_MODEL }}
+          cheap-model: ${{ vars.OPENREVIEW_CHEAP_MODEL }}

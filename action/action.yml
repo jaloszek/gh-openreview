@@ -74,6 +74,18 @@ inputs:
     description: "Force a full fresh review, ignoring previous state: no skip guard, no incremental diff, prev-review.md reset to the placeholder. Also settable per-run via a `@openreview restart` comment (the trigger phrase followed by the word `restart`)."
     required: false
     default: "false"
+  target-repo:
+    description: "owner/repo to review, for dispatch-style invocation (e.g. a central org reviewer repo reviewing PRs in other repos). When set together with `pr-number`, context resolution uses these directly instead of parsing the triggering event payload, and the action's own \"Checkout PR head\" step is skipped — the caller must check out the target repo itself (see `target-dir`)."
+    required: false
+    default: ""
+  pr-number:
+    description: "PR number to review, for dispatch-style invocation. Must be set together with `target-repo`."
+    required: false
+    default: ""
+  target-dir:
+    description: "Directory (relative to the workspace) the target repo was checked out into by the caller. Only meaningful with `target-repo`/`pr-number` — the action runs against this directory (via `OR_DIR`) instead of the workspace root, since the workspace root holds the reviewer repo's own code in a dispatch invocation. Empty runs against the workspace root as before."
+    required: false
+    default: ""
 
 outputs:
   findings-total:
@@ -115,10 +127,18 @@ runs:
         TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
         TRIGGER_LABEL: ${{ inputs.trigger-label }}
         RESTART_INPUT: ${{ inputs.restart }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+        TARGET_PR: ${{ inputs.pr-number }}
       run: |
-        run=false; pr=""
+        run=false; pr=""; repo=""
         case "$RESTART_INPUT" in 1|true|TRUE|True) restart=true ;; *) restart=false ;; esac
         is_trusted() { case "$1" in OWNER|MEMBER|COLLABORATOR) return 0 ;; *) return 1 ;; esac; }
+        # Dispatch-style invocation: target-repo/pr-number bypass event-payload
+        # parsing entirely — the caller (e.g. review-dispatch.yml) already did
+        # its own auth/trust decision before minting a token and dispatching.
+        if [ -n "$TARGET_REPO" ] && [ -n "$TARGET_PR" ]; then
+          run=true; pr="$TARGET_PR"; repo="$TARGET_REPO"
+        else
         case "$EVENT" in
           pull_request|pull_request_target)
             if [ "$ACTION" = "labeled" ]; then
@@ -141,17 +161,22 @@ runs:
               fi
             fi ;;
         esac
+        fi
+        [ -z "$repo" ] && repo="$GITHUB_REPOSITORY"
         {
           echo "should_run=$run"
           echo "pr=$pr"
+          echo "repo=$repo"
           echo "restart=$restart"
         } >> "$GITHUB_OUTPUT"
-        echo "event=$EVENT action=${ACTION:-} should_run=$run pr=$pr restart=$restart"
+        echo "event=$EVENT action=${ACTION:-} should_run=$run pr=$pr repo=$repo restart=$restart"
 
     # Check out the PR HEAD. For issue_comment/labeled events GITHUB_SHA points
-    # at the base branch, so refs/pull/<n>/head is required.
+    # at the base branch, so refs/pull/<n>/head is required. Skipped for
+    # dispatch-style invocation (target-repo set): the caller already checked
+    # out the target repo (typically into `target-dir`).
     - name: Checkout PR head
-      if: steps.ctx.outputs.should_run == 'true'
+      if: steps.ctx.outputs.should_run == 'true' && inputs.target-repo == ''
       uses: actions/checkout@v6
       with:
         repository: ${{ github.repository }}
@@ -206,9 +231,15 @@ runs:
         MARKER: ${{ inputs.marker-header }}
         BOT: ${{ inputs.bot-login }}
         RESTART: ${{ steps.ctx.outputs.restart }}
+        TARGET_DIR: ${{ inputs.target-dir }}
       run: |
+        if [ -n "$TARGET_DIR" ]; then
+          OR_DIR="$GITHUB_WORKSPACE/$TARGET_DIR"
+        else
+          OR_DIR="$GITHUB_WORKSPACE"
+        fi
         {
-          echo "OR_REPO=${{ github.repository }}"
+          echo "OR_REPO=${{ steps.ctx.outputs.repo }}"
           echo "OR_PR=${{ steps.ctx.outputs.pr }}"
           echo "OPENREVIEW_RESTART=$RESTART"
           # Feed the model through OPENREVIEW_MODEL — the engine's resolve_model()
@@ -234,11 +265,11 @@ runs:
           MARKER_MATCH=$(printf '%s' "$MARKER" | sed -E 's/^#+[[:space:]]*//')
           echo "MARKER_MATCH=$MARKER_MATCH"
           echo "BOT_LOGIN=$BOT"
-          echo "OR_DIR=$GITHUB_WORKSPACE"
+          echo "OR_DIR=$OR_DIR"
           echo "SCRATCH_REL=.openreview-tmp"
-          echo "SCRATCH=$GITHUB_WORKSPACE/.openreview-tmp"
+          echo "SCRATCH=$OR_DIR/.openreview-tmp"
         } >> "$GITHUB_ENV"
-        mkdir -p "$GITHUB_WORKSPACE/.openreview-tmp"
+        mkdir -p "$OR_DIR/.openreview-tmp"
 
     # Token-scoped: only gather/post see GH_TOKEN. The model pass below does not.
     - name: Gather PR context

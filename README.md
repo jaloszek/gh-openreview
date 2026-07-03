@@ -75,6 +75,14 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `update-ping` | `false` | When `true`, editing an existing sticky comment with ≥1 important finding also posts a short unmarked ping comment; pruned on the next run. |
 | `comment-style` | `summary` | `summary` posts only the sticky summary comment. `both` additionally posts a COMMENT-event review with inline comments for anchored important findings; the summary comment always carries every finding regardless of this setting (inline posting is best-effort — a failed inline POST is logged and never fails the run). |
 | `restart` | `false` | Force a full fresh review, ignoring previous state (skip guard, incremental diff, prev-review). Also settable per-run via an `@openreview restart` comment. |
+| `target-repo` | `""` | `owner/repo` to review, for dispatch-style invocation from a central org reviewer repo. See [Org-wide dispatch](docs/org-setup.md). |
+| `pr-number` | `""` | PR number to review, for dispatch-style invocation. Used with `target-repo`. |
+| `target-dir` | `""` | Directory the target repo was checked out into, for dispatch-style invocation. Used with `target-repo`/`pr-number`. |
+
+## Org-wide dispatch
+
+To review PRs across every repo in your org from a single fork — no
+per-repo workflow needed — see [`docs/org-setup.md`](docs/org-setup.md).
 
 ## Outputs
 
