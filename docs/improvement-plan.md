@@ -1,7 +1,10 @@
 # gh-openreview — Improvement Plan
 
 Status: **living document** · Author: pawel · Last major revision: 2026-07-03
-(field-research pass — per-project findings live in [`competitors.md`](competitors.md))
+(field-research pass — per-project findings live in
+[`competitors.md`](competitors.md); verified technical mechanics from the
+pre-implementation research pass live in
+[`implementation-notes.md`](implementation-notes.md))
 
 ## Direction
 
@@ -86,6 +89,39 @@ Patterns we already ship that the research confirms as best practice:
 
 Goal tags: 💸 cost · 🔮 predictability · 🛡️ robustness · 🎯 quality ·
 📊 observability. Provenance for each idea is in `competitors.md`.
+
+### Tier 0 — urgent fixes surfaced by pre-implementation research (2026-07)
+
+Latent problems in the *current* code, found while de-risking the roadmap
+(details + sources in `implementation-notes.md`):
+
+- **T0-1. Re-validate + harden the bundled `opencode.json` 🛡️.** opencode's
+  sandbox semantics changed: path containment is now the
+  `external_directory` permission, **default `ask` — which hangs forever in
+  headless CI** (opencode #14473). Set every permission to explicit
+  allow/deny (`external_directory: deny`), AND use tool *removal*
+  (`tools: {bash:false, webfetch:false, websearch:false, task:false}`) —
+  permission denies alone have documented bypasses (subagents bypass deny
+  rules, #32024). Disable the `task` tool. Set `small_model` to a free model
+  so internal tasks (title generation) never bill the strong tier.
+- **T0-2. Pin the opencode version 🛡️🔮.** The project moved to
+  `anomalyco/opencode` with a 1–3-day release cadence. The install script
+  accepts `--version X` (verified); npm `opencode-ai@X` is the most
+  deterministic; releases ship SHA256 checksums. Pin exact, bump
+  deliberately, re-test the JSONL event shape on bumps.
+- **T0-3. Egress sanitization in render/post 🛡️ (real security gap).** Our
+  comment echoes model text that can quote attacker-controlled PR content
+  verbatim (`@@PRDESC` is a near-verbatim echo of the PR body). Defang
+  `@mentions`/`#refs` (code-span them — notification-spam attack), strip
+  markdown images/links/HTML in echoed text (CamoLeak, CVE-2025-59145,
+  showed GitHub's Camo proxy is itself an exfil channel), strip invisible
+  Unicode outbound, length-cap PRDESC, prefer paraphrase over quote.
+- **T0-4. Ingress sanitization + spotlighting in gather/prompts 🛡️.** Strip
+  invisible-Unicode ranges (tag block U+E0000–E007F, zero-width, bidi
+  controls, variation selectors) from diff/PR body/issues/comments before
+  the model sees them; delimiter-wrap untrusted blocks with a
+  "data-not-instructions" preamble (Microsoft spotlighting: attack success
+  >50% → <2%).
 
 ### Tier 1 — cheap, proven, fits the bash architecture
 
@@ -222,27 +258,98 @@ Goal tags: 💸 cost · 🔮 predictability · 🛡️ robustness · 🎯 qualit
   tokens. Capture for exact per-pass numbers (pin a recent OpenCode; older
   builds could exit before the final `step_finish`).
 
+### Tier 4 — exploratory ideas (2026-07, not yet researched in depth)
+
+All three below must respect the security model: the LLM step stays
+network-denied (`webfetch`/`websearch` off) and token-free. Anything fetched
+from outside lands as **files in `$SCRATCH`, produced by the token-scoped
+gather side** — the model only ever reads pre-fetched context, so a
+prompt-injected model still can't exfiltrate or phone home.
+
+- **Y. External context connectors (Slack / Jira / Confluence / …) 🎯.**
+  Surrounding-discussion context: search Slack for messages linking the PR (or
+  its branch/ticket), pull the Jira ticket beyond what close-keywords catch
+  (acceptance criteria, comments — Qodo's ticket-context precedent), fetch a
+  linked Confluence design page. Rather than N built-in integrations, KISS
+  shape: a **generic connector hook** — `OPENREVIEW_CONTEXT_CMD` (mirroring
+  the existing `OPENREVIEW_AUTH_CMD` pattern): a consumer-supplied command run
+  during gather (with whatever creds the workflow gives it) that writes extra
+  markdown files into `$SCRATCH/context/`; gather lists them, the prep pass
+  folds them into the intent brief. One hook covers Slack, Jira, Confluence,
+  and anything we haven't thought of, with zero connector code in this repo;
+  first-party example scripts can live in `examples/connectors/`. (Org
+  deployment tie-in: connector creds become org secrets next to the App key.)
+
+- **Z. Web intelligence: dependency freshness & topic practices 💡.**
+  Two sub-ideas, different risk profiles:
+  1. *Dependency checks — deterministic, no LLM, no model network*: when the
+     diff touches manifests (`package.json`, `go.mod`, `requirements.txt`,
+     `pom.xml`…), gather queries the public registries (curl, tokenless) for
+     latest versions / yanked releases / known advisories
+     (`npm view`, PyPI JSON, OSV.dev API) and writes a small
+     `deps-report.md` the model reads like any other context file. Cheap,
+     grounded, and the advisory angle overlaps item O (linter/SAST grounding).
+  2. *"How is this usually done" web research*: genuinely useful but the
+     risky half — it needs live search driven by PR content. If ever added,
+     it must be an **explicit opt-in input** (`allow-web: true`) that runs as
+     a *separate* opencode pass with search enabled but with the diff-derived
+     prompt treated as untrusted, and documented as weakening layer 1 of the
+     security model. Default stays off. Park until there's demand.
+
+- **AA. Plan-vs-implementation gap analysis 🎯.** Extend the intent pipeline
+  into a three-step compliance check:
+  1. From the intent brief ONLY (issue/ticket/PR body — **before seeing the
+     diff**), a pass writes a short independent implementation plan: expected
+     touchpoints, edge cases, migrations, tests, rollout concerns.
+  2. The generate pass receives plan + diff and emits a structured gap list:
+     plan items with no counterpart in the diff (missed edge case, missing
+     test, forgotten migration) — each becomes a normal `@@FINDING` (usually
+     `nit`/`important` per impact), so render/verify need no new machinery.
+  3. Render adds a collapsed "📋 Plan coverage" section (fulfilled / gaps /
+     needs-human-verification — Qodo's ticket-compliance buckets are the
+     precedent, but the *independent plan first, then compare* twist is
+     stronger than checking requirements directly, because the plan surfaces
+     implicit expectations the ticket never spelled out).
+  Cost: one extra strong-or-cheap pass; gate behind an input
+  (`plan-check: true`). Synergy: the plan artifact doubles as review context
+  for humans, and item U (resolution rate) can measure whether gap findings
+  get addressed. Risk to watch: hallucinated requirements — the prompt must
+  mark gaps as "the plan expected X; verify whether it's needed," never as
+  confirmed bugs.
+
 ### Testing & evals
 
-- **X. Eval playground 📊🛡️** — a way to run the whole pipeline end-to-end on
-  demand, without pushing commits or burning CI on real PRs. Two halves:
-  1. **A permanent playground PR in this repo**: branch `eval/playground` off
-     `main`, containing a dedicated `eval/` folder with fixture code that
-     carries **known, seeded bugs** (an off-by-one, a dropped error check, a
-     race, a convention violation, a pure nit…), opened as a draft PR labeled
-     `do-not-merge` + excluded from the self-test workflow triggers so it
-     never runs CI. It hangs open indefinitely as a stable review target.
-  2. **A local runner** (`eval/run.sh`): wraps the existing local flow from
-     CLAUDE.md (`OR_REPO=… OR_PR=<playground-pr> gather.sh → passes.sh →
-     render.sh`, no `post.sh` by default) so a full review runs from a laptop
-     against the playground PR with any model combo, and prints
-     `opencode-review.md` + timing. Optional `--post` to exercise post.sh
-     against the playground PR only.
-  3. Later: a `eval/expected.md` golden list of the seeded bugs → a crude
-     recall/precision score per run (the field's lesson — Ellipsis runs heavy
-     CI evals; BugBot hill-climbs on resolution rate — you can't tune what
-     you don't measure). Prompt/model changes get compared on the same frozen
-     PR instead of on live traffic.
+- **X. Eval harness 📊🛡️** — run the pipeline end-to-end on demand, without
+  CI or live PRs. *(Design updated after the eval-methodology research —
+  details in `implementation-notes.md` §3.)* Key insight: gather and passes
+  are already decoupled through `$SCRATCH`, so **fixtures are frozen scratch
+  snapshots**, not a live PR:
+  1. `eval/fixtures/playground/` — a frozen gathered scratch dir (pr.diff,
+     pr-meta.json, pr-comments.md…) for a realistic multi-file diff with
+     **~12 seeded bugs** covering the converged taxonomy (logic/off-by-one,
+     null/edge case, error handling, resource leak, race, security,
+     convention violation + 2–3 hard ones); LLM-assisted seeding,
+     human-verified (Qodo's recipe). `eval/fixtures/clean/` — a known-clean
+     diff as a **false-positive control** (hard-fail on any important
+     finding; vendors skip this check — cheap and high-signal).
+  2. `eval/golden/playground.tsv` — id, file, line, category, sev,
+     description per seeded bug.
+  3. `eval/run.sh` (~200 lines bash, no new deps): copy fixture → temp
+     scratch → `passes.sh` + `render.sh` only (**no token needed**) → match
+     findings deterministically (same file + line within the bug's hunk ±5)
+     → print recall (overall/per-category/important-only), precision,
+     nit count, per-bug found-in-m/k. `EVAL_RUNS=3` for prompt changes
+     (temp 0 ≠ determinism on hosted APIs; a bug found 1/5 runs is not
+     reliably caught). LLM-judge matching only if right-line-wrong-diagnosis
+     false matches appear (judge model ≠ review model).
+  4. A **playground PR** (draft, `do-not-merge`, excluded from workflows)
+     stays useful only for exercising `post.sh`/inline posting — not the
+     primary eval path.
+  5. Growth: **historical bug replay** — freeze the pre-fix state of real
+     fix commits as fixtures (the fix commit IS the golden finding; our own
+     `1b3e315` is a ready-made seed). 5–10 replay fixtures make prompt A/B
+     comparisons meaningful (single-fixture A/B is noise: a 4-tool field
+     study found 93.4% of catches unique to one tool).
 
 ### Security / robustness quick wins
 
@@ -275,10 +382,12 @@ The field's three maturity levels (see `competitors.md` §13):
 2. **Feedback signals** — item V above (reactions/replies harvest).
 3. **Persistent per-repo memory** — suppressed finding patterns, learned team
    preferences, feedback digests, accumulated across PRs. Requires a writable
-   store; the infra-free answer is Part 3's memory repo. A later iteration
-   can add Greptile-style similarity matching (even crude text similarity in
-   bash, or a cheap-model "is this like a previously rejected finding?"
-   check against the memory file — no vector DB needed at our scale).
+   store; the infra-free answer is the hub-repo knowledge base (§3.4):
+   scheduled harvest + weekly warmup skills + a review-time picker. A later
+   iteration can add Greptile-style similarity matching (awk token-overlap
+   prefilter, then a cheap-LLM same-issue check folded into verify;
+   embeddings-via-curl with vectors as JSON in git if ever needed — no
+   vector DB at our scale; see `implementation-notes.md` §4).
 
 Order: 1 → 2 → 3. Each level works without the next.
 
@@ -397,26 +506,107 @@ Rejected alternatives (verified):
 - **Issues/Discussions as KV** — workable but awkward; no better than the
   memory repo and needs more machinery.
 
-### 3.4 Summary table
+### 3.4 Living knowledge base in the hub repo: scheduled harvest + picker
+
+Extension of §3.3 (idea 2026-07): the org fork is not just the dispatch repo —
+it doubles as the **knowledge base**, kept condensed and *living* (built from
+recent work, regenerated rather than accumulated). This supersedes the
+separate `org/openreview-memory` repo as the default: keeping knowledge in
+the hub repo itself means the harvest workflow **commits to its own repo
+with the plain `GITHUB_TOKEN`** — the GitHub App then needs `contents:write`
+nowhere at all (read-only + PR/issue write everywhere else). A separate
+memory repo remains an option when the hub fork should stay clean.
+
+**Layout** — per-repo folders, optionally path-scoped subfolders mirroring
+the target repo's tree (BugBot's walk-up rule files are the precedent):
+
+```
+knowledge/
+  <repo>/
+    memory.md            # condensed conventions/learnings (the distilled layer)
+    findings-log.tsv     # raw harvest, append-only, pruned to a window
+    src/api/…/memory.md  # optional path-scoped rules (picked up by walk-up match)
+  org.md                 # org-wide conventions
+```
+
+**Scheduled harvest** (cron workflow in the hub repo): for each configured
+repo, scan PRs reviewed by the action since the last run (marker comment
+present) and collect outcome signals per finding — reactions (with logins,
+maintainer-weighted), replies, resolved/outdated threads, and whether the
+finding's target lines changed before merge (the resolution-rate signal,
+item U). Append raw signals to `findings-log.tsv`; then a **cheap-model
+distillation pass regenerates `memory.md` from a sliding window** (e.g. last
+90 days) — Qodo's monthly auto-best-practices regeneration is the precedent,
+including the cap (`max_patterns`-style, e.g. ≤15 rules per repo) that keeps
+the file condensed. Regeneration-not-accumulation IS the freshness/decay
+mechanism: stale conventions fall out when recent work stops confirming
+them. Guardrails: learn only from *human* signals (never from the bot's own
+text — feedback-loop risk); apply the ≥3-unique-signal quorum before any
+suppression rule; every rule carries provenance (source PR/comment) so
+humans can audit and revert via normal PRs to the hub repo.
+
+**Picker at review time** (the "file-based RAG" half, kept deliberately
+non-vector): `gather.sh` fetches `knowledge/<repo>/` and selects what enters
+the prompt in two stages — (1) deterministic: walk-up path matching of the
+PR's changed files against path-scoped subfolders + always `memory.md` +
+`org.md`, under a hard token budget (~8k, PR-Agent's skills-inlining budget
+is the precedent); (2) optional, folded into the existing cheap prep pass:
+pick the top-K rules most relevant to this diff. The strong model then sees
+a short, curated "team memory" section — never the raw log.
+
+**Warmup scans / skills** (idea 2026-07): hub-repo Actions minutes are
+effectively cheap, so the hub can *proactively build* knowledge instead of
+only harvesting feedback. A weekly (or on-demand) **warmup workflow** runs
+per configured repo — from the fork, never from the repo under review, so
+target repos carry zero extra CI — checking the target out read-only and
+running a set of **skills** (cheap-model agentic scan prompts, each writing
+one distilled file into `knowledge/<repo>/`):
+
+- *conventions extraction* — mine the codebase + recently merged PRs for
+  de-facto conventions not written down anywhere (naming, error handling,
+  test patterns) → `conventions.md`;
+- *review-comment mining* — Ellipsis's trick: infer rules from what human
+  reviewers actually said on recent PRs → candidate rules with provenance;
+- *architecture/hotspot map* — a short "how this repo is organized, where
+  the dangerous parts are" brief (churn × past-bug overlap) → `map.md`;
+- *dependency inventory* — manifest → current-versions/advisories snapshot
+  (ties into Tier 4 item Z.1) → `deps.md`.
+
+Each skill is just a prompt file + output path, so orgs can drop custom
+skills into their fork (`skills/*.md` — the same shape PR-Agent's Agent
+Skills and our passes already use). The review action then starts "warm":
+the picker serves pre-digested repo knowledge instead of the strong model
+re-deriving it inside every review. Same guardrails as the harvest:
+distilled output is capped and regenerated (not accumulated), lands via
+commits to the hub repo (plain `GITHUB_TOKEN`), and is auditable/correctable
+through normal PRs. Security note: warmup skills read *checked-in target
+code* — untrusted content — so they run under the same hardened opencode
+config as review passes (no bash/network/task), and their output files are
+prompt *context*, never executed.
+
+### 3.5 Summary table
 
 | Need | Store | Extra permissions |
 |---|---|---|
 | Per-PR state (last SHA, finding IDs) | hidden HTML block in the marker comment | none |
-| Per-repo learned memory | `org/openreview-memory` repo, file per target repo | `contents:write` on that one repo |
+| Per-repo learned memory + warmup knowledge | `knowledge/<repo>/` in the hub repo itself (§3.4); separate `org/openreview-memory` repo as the alternative (§3.3) | none — hub workflows commit with their own `GITHUB_TOKEN` (alt: App `contents:write` on the one memory repo) |
 | Per-repo config | `.openreview.toml` in the target repo (default branch), human-maintained | none (`contents:read`) |
-| Org-wide config | file in the reviewer/memory repo | none |
-| Feedback signal | reactions + replies on the bot comment (item V) | none |
+| Org-wide config | file in the hub repo | none |
+| Feedback signal | reactions + replies on the bot comment (item V) + scheduled harvest (§3.4) | none |
 
-### 3.5 Implementation sketch (when we get there)
+### 3.6 Implementation sketch (when we get there)
 
 1. `review-dispatch.yml` (workflow_dispatch repo/pr inputs + App token mint +
    cross-repo checkout) — pure workflow work, no engine changes.
 2. `post.sh`: edit-in-place sticky comment (item S) + state block read/write
    (item G) — shared foundation.
-3. `gather.sh`: read memory file (if the memory repo is configured) + harvest
-   reactions/replies (item V); prompts gain a "team memory" context section.
-4. A `memory-write` step (token-scoped like gather/post): after each run,
-   append feedback digests / confirmed suppressions to the memory repo.
+3. `gather.sh`: knowledge picker (fetch `knowledge/<repo>/`, walk-up path
+   match, token budget) + harvest reactions/replies for the current PR
+   (item V); prompts gain a "team memory" context section.
+4. Hub cron workflows: **harvest** (scan recently-reviewed PRs → signal log →
+   cheap-model distillation regenerates `memory.md`) and **warmup skills**
+   (weekly per-repo scans → `conventions.md`/`map.md`/`deps.md`), both
+   committing to the hub repo with its own `GITHUB_TOKEN` (§3.4).
 5. Optional later: per-repo stub workflow template for `@openreview` comment
    triggers in repos that want them; GitHub App manifest-flow setup helper.
 
@@ -426,13 +616,14 @@ Rejected alternatives (verified):
 
 | Wave | Items | Rationale |
 |---|---|---|
-| 0 | X | Eval playground first — every later wave gets measured against the same frozen PR |
+| 0 | T0-1…T0-4, X | Urgent hardening (config, pinning, sanitization) + eval harness — every later wave gets measured against the same frozen fixtures |
 | 1 | R, M′, K | Quality floor: anchors + kill-list + gating — all prompt/awk work |
 | 2 | P, S, G | Cost + idempotent posting + incremental review (S and G share the comment-state foundation) |
 | 3 | T, J | Cheap triage (biggest remaining cost lever), then inline comments (needs R) |
-| 4 | Part 3 §3.5 steps 1–2 | Org dispatch + App identity — unlocks the fork-into-org story |
-| 5 | V, U, Part 3 §3.5 steps 3–4 | Feedback loop + resolution metric + memory repo — the learning epic |
+| 4 | Part 3 §3.6 steps 1–2 | Org dispatch + App identity — unlocks the fork-into-org story |
+| 5 | V, U, Part 3 §3.6 steps 3–4 | Feedback loop + resolution metric + hub knowledge base (harvest + warmup skills + picker) — the learning epic |
 | 6 | W, N, O, L′, telemetry | Thorough mode, evidence gating, linter grounding, caching |
+| — | Y, Z, AA (Tier 4) | Exploratory — pick up on demand; Y (connector hook) and Z.1 (dep freshness) are small enough to slot into any wave; AA after the eval playground exists to measure it |
 
 Security quick wins (installer pinning, config-replacement warning, trigger
 word-boundary) can land any time as independent commits.
