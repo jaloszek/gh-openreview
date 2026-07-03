@@ -53,6 +53,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 |---|---|
 | `pull_request` (opened / synchronize / reopened / ready_for_review) | Reviews the PR. |
 | `issue_comment` containing `@openreview` | On-demand review — **gated to trusted authors** (OWNER/MEMBER/COLLABORATOR). |
+| `issue_comment` containing `@openreview restart` | Same, but also forces a full fresh review (see [Restart / skip guard](#restart--skip-guard) below). |
 | `pull_request` / `pull_request_target` `labeled` with `opencode-review` | Review opted in by someone with write access. |
 
 ## Inputs
@@ -73,6 +74,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `min-confidence` | `low` | Minimum confidence (`low`/`med`/`high`) a finding must have to be rendered. Below-threshold findings are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting. |
 | `update-ping` | `false` | When `true`, editing an existing sticky comment with ≥1 important finding also posts a short unmarked ping comment; pruned on the next run. |
 | `comment-style` | `summary` | `summary` posts only the sticky summary comment. `both` additionally posts a COMMENT-event review with inline comments for anchored important findings; the summary comment always carries every finding regardless of this setting (inline posting is best-effort — a failed inline POST is logged and never fails the run). |
+| `restart` | `false` | Force a full fresh review, ignoring previous state (skip guard, incremental diff, prev-review). Also settable per-run via an `@openreview restart` comment. |
 
 ## Outputs
 
@@ -108,17 +110,33 @@ passes read only those files — they never receive a GitHub token.**
 
 ### Incremental review
 
-The posted comment embeds a hidden state block (the reviewed commit SHA and a
-`git patch-id` of the diff) as its last line. On the next run:
+The posted comment embeds a hidden state block (the reviewed commit SHA, a
+`git patch-id` of the diff, and an engine fingerprint — see below) as its last
+line. On the next run:
 
-- If the diff hasn't changed (same patch-id — e.g. re-triggering a review with
-  no new commits), the run skips the LLM passes and posting entirely.
+- If neither the diff nor the engine changed (same patch-id and fingerprint —
+  e.g. re-triggering a review with no new commits and no config change), the
+  run skips the LLM passes and posting entirely.
 - Otherwise, if the previously reviewed commit is still an ancestor of the new
   head, an additional incremental diff (changes since that commit) is handed to
   the generate pass as extra focus context — the full diff is still reviewed,
   this only helps the model prioritize.
 - A force-push or rebase that makes the previous commit unreachable falls back
   silently to a full review.
+
+### Restart / skip guard
+
+The skip guard only fires when **both** the diff (patch-id) and the engine
+(fingerprint) are unchanged. The fingerprint is a hash over `lib/passes.sh`'s
+contents plus the resolved `model`/`verify-model` — so editing the prompt or
+switching models invalidates the skip even on a permanently-open eval PR whose
+diff never changes. State written before this fingerprint existed has no `fp`
+field, which is treated as a mismatch (full review), not a match.
+
+Set `restart: true` (or comment `@openreview restart` on the PR) to force a
+full review unconditionally: previous state is ignored entirely (no skip, no
+incremental diff, `prev-review.md` reset to the placeholder), while a fresh
+state block is still written at the end for future runs.
 
 ## Authentication & models
 

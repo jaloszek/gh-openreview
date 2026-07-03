@@ -78,6 +78,20 @@ resolve_verify_model() {
   export OR_VERIFY_MODEL
 }
 
+# --- engine fingerprint (restart / skip-guard invalidation) ------------------
+# engine_fingerprint: short stable hash over what actually changes review
+# behavior without changing the diff — lib/passes.sh contents plus the
+# resolved main/verify model names. cksum-based (POSIX, Bash 3.2-safe, no
+# external hash dependency beyond cksum which ships everywhere). Callers must
+# resolve_model/resolve_verify_model first so OR_MODEL/OR_VERIFY_MODEL reflect
+# the run's actual config.
+engine_fingerprint() {
+  local passes_file="$OPENREVIEW_LIB/passes.sh" content=""
+  [ -f "$passes_file" ] && content=$(cat "$passes_file")
+  { printf '%s\n' "$content"; printf 'model:%s\n' "${OR_MODEL:-}"; printf 'verify:%s\n' "${OR_VERIFY_MODEL:-}"; } \
+    | cksum | awk '{print $1}'
+}
+
 # --- opencode config precedence ----------------------------------------------
 # Respect a user's config; only fall back to the bundled one when none exists.
 #   OPENCODE_CONFIG env > project ./opencode.json(c) > ~/.config/opencode > bundled

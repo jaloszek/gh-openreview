@@ -5,7 +5,10 @@
 # Env: OR_REPO, OR_PR, SCRATCH, MARKER_MATCH,
 #      OPENREVIEW_DIFF_EXCLUDE (ERE matched against each file's path; matching
 #        files are dropped from the diff — lockfiles, generated, vendored, …),
-#      OPENREVIEW_DIFF_MAX_LINES (truncate the diff to this many lines; 0 = off).
+#      OPENREVIEW_DIFF_MAX_LINES (truncate the diff to this many lines; 0 = off),
+#      OPENREVIEW_RESTART (1/true forces a full review: ignores previous state,
+#        never writes the skip sentinel, forces prev-review.md to the
+#        placeholder, produces no incremental files).
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
@@ -16,6 +19,19 @@ OR_DIR="${OR_DIR:-$PWD}"
 # Exported so jq can read it via env.MARKER_MATCH — never string-interpolate a
 # possibly-quote-bearing value into the jq filter.
 export MARKER_MATCH="${MARKER_MATCH:-OpenCode Review}"
+
+case "${OPENREVIEW_RESTART:-}" in
+  1|true|TRUE|True) RESTART=1 ;;
+  *) RESTART=0 ;;
+esac
+
+# Engine fingerprint: hashes lib/passes.sh + the resolved main/verify models
+# so a PROMPT/MODEL change invalidates the skip guard even when the diff
+# didn't change. Written to $SCRATCH for post.sh to embed in the state block.
+resolve_model
+resolve_verify_model
+CURRENT_FP=$(engine_fingerprint)
+printf '%s' "$CURRENT_FP" > "$SCRATCH/engine-fp"
 
 # Default path excludes: machine-generated / vendored / lockfile noise that
 # inflates token cost without being meaningfully reviewable.
@@ -40,11 +56,16 @@ gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
   > "$PREV_COMMENT_RAW" 2>/dev/null || true
 
 # Parse the hidden state block: `<!-- openreview:state <base64> -->` encoding
-# `{"v":1,"last_sha":"...","patch_id":"..."}`. Tolerate absence/garbage as "no
-# state". Normalize CRLF first (human web edits introduce it).
+# `{"v":1,"last_sha":"...","patch_id":"...","fp":"..."}`. Tolerate
+# absence/garbage as "no state". Normalize CRLF first (human web edits
+# introduce it). Restart mode skips this entirely — the run must not be
+# gated by (or trust) anything from the previous review.
 LAST_SHA=""
 PREV_PATCH_ID=""
-if [ -s "$PREV_COMMENT_RAW" ]; then
+PREV_FP=""
+if [ "$RESTART" -eq 1 ]; then
+  info "restart requested — ignoring previous review state"
+elif [ -s "$PREV_COMMENT_RAW" ]; then
   STATE_B64=$(tr -d '\r' < "$PREV_COMMENT_RAW" \
     | grep -oE 'openreview:state [A-Za-z0-9+/=]+' | tail -1 \
     | sed -E 's/^openreview:state //' || true)
@@ -53,6 +74,7 @@ if [ -s "$PREV_COMMENT_RAW" ]; then
     if [ -n "$STATE_JSON" ]; then
       LAST_SHA=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"last_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
       PREV_PATCH_ID=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"patch_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      PREV_FP=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"fp"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     fi
   fi
 fi
@@ -69,14 +91,23 @@ fi
 [ -s "$SCRATCH/patch-id" ] || : > "$SCRATCH/patch-id"
 CURRENT_PATCH_ID=$(cat "$SCRATCH/patch-id" 2>/dev/null || echo '')
 
-# Skip-if-identical: same patch-id as the last reviewed run -> no-op the rest
-# of the pipeline (passes/render/metrics/post all check for this sentinel).
-if [ -n "$PREV_PATCH_ID" ] && [ -n "$CURRENT_PATCH_ID" ] && [ "$PREV_PATCH_ID" = "$CURRENT_PATCH_ID" ]; then
-  echo "SKIP_REVIEW=1" >> "$SCRATCH/metrics.env"
-  echo "::notice::diff unchanged since last review — skipping"
-  : > "$SCRATCH/skip-review"
-  ok "diff unchanged since last review (patch-id $CURRENT_PATCH_ID) — skipping"
-  exit 0
+# Skip-if-identical: fires only when BOTH the patch-id AND the engine
+# fingerprint match the last reviewed run -> no-op the rest of the pipeline
+# (passes/render/metrics/post all check for this sentinel). A missing fp in
+# old state (pre-TASK-22 comments) counts as a mismatch, not a match. Restart
+# bypasses this unconditionally, regardless of what would otherwise match.
+if [ "$RESTART" -ne 1 ] && [ -n "$PREV_PATCH_ID" ] && [ -n "$CURRENT_PATCH_ID" ]; then
+  if [ "$PREV_PATCH_ID" != "$CURRENT_PATCH_ID" ]; then
+    info "skip guard bypassed: diff changed (patch-id $PREV_PATCH_ID -> $CURRENT_PATCH_ID)"
+  elif [ -z "$PREV_FP" ] || [ "$PREV_FP" != "$CURRENT_FP" ]; then
+    info "skip guard bypassed: engine changed (fp ${PREV_FP:-<none>} -> $CURRENT_FP)"
+  else
+    echo "SKIP_REVIEW=1" >> "$SCRATCH/metrics.env"
+    echo "::notice::diff and engine unchanged since last review — skipping"
+    : > "$SCRATCH/skip-review"
+    ok "diff and engine unchanged since last review (patch-id $CURRENT_PATCH_ID, fp $CURRENT_FP) — skipping"
+    exit 0
+  fi
 fi
 
 # Incremental diff: only when the previous SHA is still a reachable ancestor
@@ -258,12 +289,16 @@ awk '
 ' "$SCRATCH/pr.diff" > "$SCRATCH/pr-numbered.diff"
 
 # Most recent prior review (matched by the marker substring, any author) so the
-# reviewer can stay silent about findings since fixed. Empty on the first run.
-# Reuses the comment already fetched above for the state-block parse; strip
-# the hidden state comment itself — it's not review content.
-sed '/<!-- openreview:state /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
-  || : > "$SCRATCH/prev-review.md"
-[ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
+# reviewer can stay silent about findings since fixed. Empty on the first run,
+# and forced to the placeholder on restart (the model must not defer to a
+# review it's meant to redo from scratch).
+if [ "$RESTART" -eq 1 ]; then
+  echo "(no previous review)" > "$SCRATCH/prev-review.md"
+else
+  sed '/<!-- openreview:state /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
+    || : > "$SCRATCH/prev-review.md"
+  [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
+fi
 rm -f "$PREV_COMMENT_RAW"
 
 # --- Richer context: intent + existing discussion ----------------------------
