@@ -1130,6 +1130,84 @@ diffstat + per-bug grep evidence); BUGS.md lines match real head lines;
 README section complete; no lint impact (`shellcheck` untouched by Python
 files); eval `--selftest` unaffected.
 
+## TASK-34 — Minimal comment format (flat priority list, impact dots)
+
+**Files:** `lib/render.sh` only (plus README screenshot-adjacent prose if it
+describes the old shape). **Decided with pawel 2026-07-04** — the current
+table + per-finding sections + details blocks repeat every fact 2-3×.
+
+**Spec — exact target shape** (replaces the tally table, the `### N.` detail
+sections, and the `<details>` blocks entirely):
+
+```
+## 🤖 OpenCode Review            <- marker header, unchanged
+
+**6 important · 2 nits**         <- tally line, unchanged (omit when zero)
+
+- 🔴 **<title>** · `path:line` — <body>
+- 🔴 **<title>** · `path:line` — <body>
+- 🟠 **<title>** · `path:line` — <body>
+- 🟡 **<title>** · `path:line` — <body>
+- 🟡 _+N more nits over the cap_          <- only when nits were capped
+
+> 📝 PR description: **<rating>** — <reason>   <- unchanged, non-good only
+
+_Updated for commit <sha> at <ts>_             <- unchanged (post.sh adds)
+<!-- openreview:state ... -->                  <- unchanged (post.sh adds)
+```
+
+Rules:
+1. **Dot mapping:** 🔴 = important with `conf: high`; 🟠 = important with
+   `conf: med|low` (the "verify this" tier — replaces the confidence detail
+   with something readable); 🟡 = nit (any confidence). Ordering stays
+   exactly as today (sev, then conf, then NR) — the list order IS the
+   ranking, so no numbering.
+2. One list item per finding: `- <dot> **<title>** · \`<loc>\` — <body>`.
+   Body is the existing single-line, already-egress-sanitized text. No
+   details blocks, no severity words, no confidence lines anywhere.
+3. Unanchored findings (TASK-08): append ` _(location approximate)_` after
+   the loc code span instead of the old details-block note. Demotion notes
+   ("original severity important") are DROPPED from display (the dot tier
+   already communicates it); keep metrics counters unchanged.
+4. Zero-findings case unchanged: `✅ No blocking issues found in this diff.`
+5. `findings.tsv` (TASK-17 consumer), metrics.env fields, marker header,
+   and everything post.sh appends are byte-compatible — this is a display
+   change only. The 60k truncation guard still applies.
+6. **Agent details block (decided 2026-07-04):** after the human list (and
+   before the rating line), ONE collapsed block carrying the full
+   machine-readable findings for coding agents that are asked to address
+   the review:
+
+   ```
+   <details><summary>🔍 Machine-readable findings (for agents)</summary>
+
+   ​```tsv
+   sev	conf	path	line	anchored	title	body
+   important	high	metrix/api.py	24	1	<title>	<body>
+   ...
+   ​```
+   Schema: sev(important|nit) conf(high|med|low) path line anchored(1|0) title body.
+   Includes ALL findings (even nits over the display cap and
+   confidence-suppressed ones), so agents see what humans didn't.
+   </details>
+   ```
+
+   Content = the already-built findings.tsv rows (egress-sanitized), plus
+   suppressed/capped findings appended with the same schema. Renders
+   collapsed, costs humans one line.
+
+**Acceptance criteria:**
+- Rendered output for a canned `review-verified.md` with high/med/low
+  importants + nits + an unanchored finding + a non-good rating matches the
+  target shape exactly, including the agent details block (show the full
+  rendered comment in the summary).
+- Zero-findings case: no agent block (nothing to fix), just the ✅ line.
+- Rating-good and nit-cap-overflow cases render correctly; capped nits
+  appear in the agent block but not the human list (show all three cases).
+- `eval/run.sh --selftest` passes (update its canned expectations if they
+  assert the old table shape — check first); `shellcheck` clean;
+  findings.tsv file output unchanged byte-for-byte for the same input.
+
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
