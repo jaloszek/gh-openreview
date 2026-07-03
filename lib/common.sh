@@ -172,15 +172,28 @@ oc_run() {
     # Capture the real exit status: `|| rc=$?` both suppresses set -e and grabs
     # the failure code. (A bare `if (cmd); then…; fi` leaves $?=0 on a false
     # condition, so reading $? after the block would always see success.)
-    # `timeout` is optional — absent on stock macOS and some runner images; run
-    # without it there rather than failing every pass. stdout (the JSON event
-    # stream) is redirected to $jsonl, not inherited, so it stays out of this
-    # function's own stdout; stderr passes through unchanged.
+    # `timeout` is absent on stock macOS (and `gtimeout` needs coreutils), so
+    # fall back to a pure-bash watchdog there — a hung model call must NEVER
+    # run unbounded (observed: free-tier stalls with 0-byte event streams).
+    # stdout (the JSON event stream) is redirected to $jsonl, not inherited,
+    # so it stays out of this function's own stdout; stderr passes through.
     rc=0
     if command -v timeout >/dev/null 2>&1; then
       ( cd "$dir" && timeout "$to" opencode run --format json -m "$model" "$prompt" ) >"$jsonl" || rc=$?
+    elif command -v gtimeout >/dev/null 2>&1; then
+      ( cd "$dir" && gtimeout "$to" opencode run --format json -m "$model" "$prompt" ) >"$jsonl" || rc=$?
     else
-      ( cd "$dir" && opencode run --format json -m "$model" "$prompt" ) >"$jsonl" || rc=$?
+      local ocpid wpid
+      ( cd "$dir" && exec opencode run --format json -m "$model" "$prompt" ) >"$jsonl" &
+      ocpid=$!
+      ( sleep "$to"; kill "$ocpid" 2>/dev/null ) &
+      wpid=$!
+      wait "$ocpid" || rc=$?
+      kill "$wpid" 2>/dev/null
+      wait "$wpid" 2>/dev/null || true
+      # SIGTERM from the watchdog surfaces as 143; normalize to timeout's 124
+      # so the retry/logging path below treats both alike.
+      [ "$rc" -eq 143 ] && rc=124
     fi
     [ "$rc" -eq 0 ] && return 0
     if [ "$rc" -eq 124 ]; then
