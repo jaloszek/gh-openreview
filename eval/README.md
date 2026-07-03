@@ -105,15 +105,41 @@ is:
    (must-catch), several moderate, plus nit bait everywhere.
    **Scored on triage quality: recall of the must-catch criticals as
    `important` (hard requirement), plus a noise budget (nit count within
-   the cap, bounded total findings).** Also exercises the diff compression
-   ladder for real. The aim mirrors what a senior reviewer does on a big
-   PR: surface what matters, refuse to drown the author.
+   the cap, bounded total findings).** The aim mirrors what a senior
+   reviewer does on a big PR: surface what matters, refuse to drown the
+   author.
 
 Together: `clean`/`quiet` guard the noise floor, `subtle` guards depth,
 `noisy` guards prioritization, and `playground` stays the broad smoke test.
-(Implementation note: `quiet` and `noisy` need a small runner extension — a
-per-fixture expectations file with `max_importants` / `max_nits` /
-`must_catch` — the golden TSV alone can't express budgets.)
+Note: the eval does **not** run `gather.sh` — fixtures feed `passes.sh`
+directly — so the diff compression ladder is not exercised here; noisy
+fixtures must stay within the diff budget on their own.
+
+### Expectations files
+
+The golden TSV can only express "find these bugs". Budgets and hard
+requirements need a second, optional per-fixture file:
+`eval/golden/<name>.expect` — plain `KEY=VALUE` lines (`#` comments allowed):
+
+| Key | Meaning |
+|-----|---------|
+| `MAX_IMPORTANTS=<n>` | rendered important findings above `n` ⇒ FAIL |
+| `MAX_NITS=<n>` | rendered nits above `n` ⇒ FAIL |
+| `MAX_TOTAL=<n>` | total rendered findings above `n` ⇒ FAIL |
+| `MUST_CATCH=<id,id,…>` | golden ids that must be matched (union across runs) by a finding rendered as `important` ⇒ else FAIL |
+| `RUNS_DEFAULT=<k>` | repetitions when `EVAL_RUNS` is not explicitly set (the env var always wins) |
+
+Grading depends on which files exist for a fixture:
+
+- **golden only** — today's behavior: recall/precision, no hard fail.
+- **golden + expect** — recall/precision *and* budget/must-catch enforcement.
+- **expect only** (e.g. `quiet`) — budget-only: recall/precision is skipped
+  (there's no answer key), budgets are enforced.
+- **neither** — clean control: any important finding fails the run.
+
+Violations print a `✗ expectation failed: ...` line, add
+`<fixture> expect_<key> pass|fail` rows to `scorecard.tsv`, and make
+`run.sh` exit non-zero once all fixtures have run.
 
 ## Adding a fixture
 
