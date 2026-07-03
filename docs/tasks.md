@@ -982,6 +982,61 @@ a canned garbage `triage.md`.
 
 ---
 
+## TASK-29 — Merge, don't replace: hardened config survives consumer configs
+
+**Files:** `lib/common.sh` (`prepare_opencode_config`), `action/action.yml`
+(new input), `SECURITY.md`, `README.md`.
+**Motivation (found live in ai-news run 28679351811):** a consumer repo's
+own `opencode.json` currently REPLACES the bundled hardened config entirely
+(the documented precedence), silently removing layer 1 of the security
+model (bash/webfetch/websearch/task denial, `external_directory: deny`).
+The TASK-12 warning fires but nothing enforces.
+
+**Spec:**
+1. New default behavior in `prepare_opencode_config`: when the resolved
+   config is NOT the bundled one, produce a **merged effective config** at
+   `$SCRATCH/opencode-effective.json`:
+   - base = the consumer's resolved config (env → project → user, as
+     today),
+   - force-overlay the security-critical keys from the bundled config:
+     the full `tools` map and the full `permission` map (replace those two
+     keys wholesale — do not deep-merge them, so a consumer cannot
+     re-enable anything piecemeal), and **drop any `mcp` key** (MCP servers
+     add tools),
+   - everything else (provider, model, instructions, small_model, agent,
+     theme…) passes through untouched.
+   Point `OPENCODE_CONFIG` at the merged file. Consumer keeps
+   models/providers; sandbox stays intact.
+2. Merge implementation: prefer `jq` if present, else `python3 -c` (both
+   are on GitHub runners and dev Macs); if NEITHER is available, **fall
+   back to the bundled config outright** (safe direction) with a `warn`.
+   Never fail the run over the merge.
+3. New input `trust-repo-config` (default `false`): `true` restores
+   today's behavior (consumer config used verbatim; the TASK-12 warning
+   remains). Env: `OPENREVIEW_TRUST_REPO_CONFIG`.
+4. **Empirical acceptance test (critical):** with a project `opencode.json`
+   containing `"tools": {"bash": true}` and a permissive `permission`, run
+   a cheap real pass (or `opencode run` with a trivial prompt asking the
+   model to run \`echo pwned\` via bash) against the merged config and show
+   bash is NOT available/denied. This also verifies opencode does not
+   itself re-merge the project `opencode.json` on top of `OPENCODE_CONFIG`
+   — if it does, document it and adjust (e.g. run from a directory without
+   the project config… flag for maintainer if unsolvable at this layer).
+5. Keep the TASK-12 warning for the `trust-repo-config: true` path; in the
+   default path, replace it with an `info` line: "merged consumer config
+   with hardened security keys (tools/permission forced, mcp dropped)".
+6. SECURITY.md: rewrite the layer-1 paragraph — repo config can no longer
+   silently weaken the sandbox; document `trust-repo-config`.
+
+**Acceptance criteria:**
+- Bundled-config-only repos: byte-identical behavior (no merge step).
+- A hostile project config (bash:true, external_directory:allow, mcp
+  servers) yields a merged config with our tools/permission maps verbatim
+  and no mcp key; the empirical bash-denial test passes.
+- `trust-repo-config: true` restores verbatim consumer config + warning.
+- No jq/python3 ⇒ bundled config + warn. `shellcheck` + `actionlint`
+  clean; eval `--selftest` unaffected.
+
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
