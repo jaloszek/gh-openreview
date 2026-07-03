@@ -414,18 +414,147 @@ updates a comment; editing does not notify watchers; body limit 65,536 chars
 - Oversized render output is truncated, not failed. `shellcheck` +
   `actionlint` pass.
 
+## TASK-16 — Incremental review + state block (plan item G; decided: auto + incremental)
+
+**Files:** `lib/post.sh`, `lib/gather.sh`, `lib/common.sh` (helper),
+`action/action.yml` (env plumbing only if needed), `README.md`.
+**Depends on:** TASK-14 (edit-in-place, merged). **Facts:** IN §2
+(patch-id semantics, ancestry checks, HTML-comment state, force-push
+signals).
+
+**Spec:**
+1. **State write (post.sh):** when posting/editing the sticky comment,
+   embed a hidden state block as the LAST line of the body:
+   `<!-- openreview:state <base64> -->` where `<base64>` encodes one line of
+   JSON: `{"v":1,"last_sha":"<head sha reviewed>","patch_id":"<id>"}`.
+   Base64 avoids `-->` and quoting issues. `head sha` = the SHA gather
+   recorded; `patch_id` comes from a new file `$SCRATCH/patch-id` written by
+   gather (step 3). Build the JSON with printf, base64 with the `base64`
+   binary (present on runners/macOS).
+2. **State read (gather.sh):** when fetching the previous bot comment (it
+   already finds it for `prev-review.md`), also extract the state block:
+   grep the raw body for `openreview:state ([A-Za-z0-9+/=]+)`, decode,
+   parse `last_sha` and `patch_id` with sed (no jq). Tolerate absence or
+   garbage (treat as no state). Normalize CRLF before matching.
+3. **Patch-id (gather.sh):** compute
+   `git diff "$(git merge-base <base> HEAD)" HEAD | git patch-id --stable`
+   (first field) and write it to `$SCRATCH/patch-id`. Base ref: the PR base
+   SHA from `pr-meta.json` (add `baseRefOid` to the `gh pr view --json`
+   field list if missing).
+4. **Skip-if-identical:** if state `patch_id` equals the freshly computed
+   one, write `SKIP_REVIEW=1` to `$SCRATCH/metrics.env`, emit an
+   `::notice::` ("diff unchanged since last review — skipping"), and exit 0
+   from gather with a sentinel file `$SCRATCH/skip-review`. In
+   `action/action.yml`, gate the passes/render/metrics/post steps'
+   existing `if:` conditions additionally on the sentinel file NOT existing
+   (a tiny `test ! -f` guard step or hashFiles-style check — keep it simple:
+   each subsequent step's script begins with
+   `[ -f "$SCRATCH/skip-review" ] && { echo "skipped"; exit 0; }`).
+5. **Incremental diff:** if state exists, `last_sha` differs from HEAD, and
+   BOTH `git cat-file -e <last_sha>` and
+   `git merge-base --is-ancestor <last_sha> HEAD` succeed → produce an
+   ADDITIONAL file `$SCRATCH/pr-incremental.diff` = `git diff
+   <last_sha>..HEAD` (two-dot), run through the same exclude filter, and
+   prepend one line to the prompt context via a new file
+   `$SCRATCH/incremental-note.md`: "This PR was previously reviewed at
+   <last_sha>. pr-incremental.diff contains only the changes since then —
+   focus your review there; the full diff is still in pr-numbered.diff for
+   context." `passes.sh`: if `incremental-note.md` exists, include it and
+   `pr-incremental.diff` in the pass-1 context list. On ancestry failure
+   (force-push/rebase) fall back silently to full review (no incremental
+   files).
+6. The full diff pipeline (numbered diff, commentable lines, compression)
+   stays untouched — incremental is additive context, not a replacement
+   (KISS; a later iteration may trim the full diff when incremental).
+
+**Acceptance criteria:**
+- Round-trip: a state block written by post.sh is parsed back by gather.sh
+  (test with a canned comment body incl. CRLF variant).
+- Same-diff skip: with a canned previous state whose patch_id matches, the
+  sentinel is written and downstream steps would no-op (show the guard
+  firing locally).
+- Force-push: with a bogus `last_sha`, no incremental files are produced and
+  the run proceeds as full review.
+- `shellcheck` + `actionlint` pass; state block survives the 60k truncation
+  guard (truncate BEFORE appending the state line, never after).
+
+## TASK-17 — Opt-in inline review comments (plan item J; decided: opt-in, COMMENT-only)
+
+**Files:** `lib/render.sh` (emit findings TSV), `lib/post.sh`,
+`action/action.yml` (new input), `README.md`.
+**Depends on:** TASK-08 (anchor validation, merged). **Facts:** IN §2
+(atomic review POST, PENDING pitfall, 422 semantics, minimizeComment).
+
+**Spec:**
+1. New input `comment-style`: `summary` (default, today's behavior) |
+   `both` (summary comment + inline review). Env `OPENREVIEW_COMMENT_STYLE`.
+2. `render.sh`: additionally write `$SCRATCH/findings.tsv` — one row per
+   RENDERED finding: `sev<TAB>conf<TAB>path<TAB>line<TAB>anchored(0|1)<TAB>title<TAB>body`
+   (body single-line, already egress-sanitized; `anchored` from the TASK-08
+   validation result).
+3. `post.sh`, when style=`both` and findings.tsv has ≥1 row with
+   `sev=important` AND `anchored=1`:
+   a. Clean up: list this PR's reviews by `AUTHOR_LOGIN` whose body contains
+      `<!-- openreview:inline -->`; for each, minimize it via GraphQL
+      `minimizeComment` (classifier `OUTDATED`) — query review node ids via
+      GraphQL, guard with `viewerCanMinimize`; also delete any PENDING
+      review by the bot (GET reviews, state PENDING → DELETE) so a crashed
+      run never blocks posting.
+   b. Build one JSON payload (a temp file, then
+      `gh api repos/{o}/{r}/pulls/<n>/reviews --method POST --input file`):
+      `event: "COMMENT"`, `body: "🤖 Inline findings from the OpenCode
+      review — details in the summary comment.\n<!-- openreview:inline -->"`,
+      `commit_id`: the head SHA gather recorded, and `comments[]`: for each
+      qualifying finding — `path`, `line` (integer), `side: "RIGHT"`,
+      `body`: `**<title>**\n\n<body>\n\n_Confidence: <conf>_`. Escape JSON
+      strings correctly (printf %s + sed escaping, or build with `gh api`'s
+      `--input` and a small awk JSON emitter — NO string interpolation into
+      shell single-quotes).
+   c. If the POST fails (any 4xx): log the error body as a `warn`, do NOT
+      retry per-comment, and continue — the summary comment already carries
+      every finding (fallback-by-design). Never fail the step over inline
+      posting.
+4. Never post APPROVE/REQUEST_CHANGES anywhere (decision #3). Suggestion
+   blocks are OUT of scope for this task.
+5. README: document the input and the fallback semantics.
+
+**Acceptance criteria:**
+- style=summary: byte-identical behavior to today (no findings.tsv
+  consumers run).
+- style=both with a canned findings.tsv (2 anchored importants, 1
+  unanchored, 1 nit): payload JSON contains exactly the 2 anchored
+  importants with side RIGHT and integer lines; `event` is COMMENT; body
+  carries the inline marker. Validate the JSON with `python3 -m json.tool`.
+- Simulated 422 (feed a bogus line): step still exits 0 and the summary
+  comment flow is untouched.
+- `shellcheck` + `actionlint` pass.
+
+## TASK-18 — Free-tier data-retention warning (decision #1)
+
+**Files:** `README.md`, `SECURITY.md`.
+
+**Spec:** Add a short, prominent warning near the top of README (right
+after the default-model mention) and a subsection in SECURITY.md: the
+bundled default model runs on opencode Zen's free tier, and free-tier
+traffic **may be used for model improvement/training** (paid tiers are
+documented as zero-retention). Recommend setting `model`/`cheap-model` to a
+paid tier (e.g. `opencode/deepseek-v4-flash`) for private or sensitive
+code. One paragraph each, no restructuring.
+
+**Acceptance criteria:** warning present in both files, factually phrased
+as above; no other content changed.
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
-- **G (incremental review)** — force-push edge cases + state-block schema
-  design (builds on TASK-14).
-- **J (inline comments)** — decided opt-in + COMMENT-only, but anchor
-  fallback UX and review-batching details still need design (needs TASK-08
-  in place first).
 - **T (cheap triage)** — routing thresholds + prompt design tuning.
 - **AG (named-agents refactor)** — decided, but it restructures the engine
-  core; keep with the maintainer or a strong agent, not a simple handoff.
+  core AND has an open design conflict: a consumer repo's own
+  `opencode.json` replaces the bundled config entirely (documented
+  precedence), which would delete the agent definitions and break
+  `--agent` invocations. Needs a fallback design first (detect missing
+  agents → inline prompts?). Maintainer/strong-agent work.
 - **Part 3 (org dispatch, App, hub knowledge base)** — org setup is human
   work; harvest/warmup design still needs decisions.
 - **V/U/W/N/O/L′, Tier 4 (Y/Z/AA)** — design open or eval-dependent.
