@@ -93,13 +93,21 @@ prepare_opencode_config() {
 }
 
 # --- opencode invocation -----------------------------------------------------
-# oc_run <dir> <model> <prompt>: run opencode in <dir> with a per-pass timeout
-# and one retry. opencode's chatter goes to stderr so command stdout stays
-# clean; the model communicates results by writing files (the prompts say so).
+# oc_run <dir> <model> <prompt> [pass]: run opencode in <dir> with a per-pass
+# timeout and one retry. Always runs with --format json so per-pass cost/token
+# telemetry can be extracted (see oc_extract_metrics below); the JSONL event
+# stream is captured to $SCRATCH/oc-<pass>.jsonl (or discarded when [pass] is
+# omitted or SCRATCH is unset) so it never pollutes command stdout. opencode's
+# human-readable chatter still goes to stderr; the model communicates results
+# by writing files (the prompts say so).
 # Env: OPENREVIEW_PASS_TIMEOUT (seconds, default 600), OPENREVIEW_AUTH_CMD.
 oc_run() {
-  local dir="$1" model="$2" prompt="$3"
+  local dir="$1" model="$2" prompt="$3" pass="${4:-}"
   local to="${OPENREVIEW_PASS_TIMEOUT:-600}"
+  local jsonl="/dev/null"
+  if [ -n "$pass" ] && [ -n "${SCRATCH:-}" ]; then
+    jsonl="$SCRATCH/oc-$pass.jsonl"
+  fi
   if [ -n "${OPENREVIEW_AUTH_CMD:-}" ]; then
     info "running auth-cmd…"; eval "$OPENREVIEW_AUTH_CMD" 1>&2 || warn "auth-cmd exited non-zero"
   fi
@@ -109,12 +117,14 @@ oc_run() {
     # the failure code. (A bare `if (cmd); then…; fi` leaves $?=0 on a false
     # condition, so reading $? after the block would always see success.)
     # `timeout` is optional — absent on stock macOS and some runner images; run
-    # without it there rather than failing every pass.
+    # without it there rather than failing every pass. stdout (the JSON event
+    # stream) is redirected to $jsonl, not inherited, so it stays out of this
+    # function's own stdout; stderr passes through unchanged.
     rc=0
     if command -v timeout >/dev/null 2>&1; then
-      ( cd "$dir" && timeout "$to" opencode run -m "$model" "$prompt" ) 1>&2 || rc=$?
+      ( cd "$dir" && timeout "$to" opencode run --format json -m "$model" "$prompt" ) >"$jsonl" || rc=$?
     else
-      ( cd "$dir" && opencode run -m "$model" "$prompt" ) 1>&2 || rc=$?
+      ( cd "$dir" && opencode run --format json -m "$model" "$prompt" ) >"$jsonl" || rc=$?
     fi
     [ "$rc" -eq 0 ] && return 0
     if [ "$rc" -eq 124 ]; then
@@ -124,4 +134,35 @@ oc_run() {
     fi
   done
   return "$rc"
+}
+
+# --- per-pass cost/token telemetry --------------------------------------------
+# oc_extract_metrics <jsonl> <prefix>: parse the LAST step_finish event out of
+# an opencode --format json event stream (one JSON object per line) and append
+# <prefix>_COST, <prefix>_TOKENS_IN, <prefix>_TOKENS_OUT, <prefix>_CACHE_READ to
+# $SCRATCH/metrics.env. Tolerant regex extraction, not a JSON parser (no jq
+# dependency). Degrades gracefully — a missing file or step_finish event just
+# warns and leaves the values empty; never fails the pipeline.
+oc_extract_metrics() {
+  local jsonl="$1" prefix="$2" line cost tin tout cread metrics_file
+  metrics_file="${SCRATCH:?}/metrics.env"
+  if [ ! -s "$jsonl" ]; then
+    warn "no telemetry captured for $prefix (opencode --format json stream empty/missing)"
+    return 0
+  fi
+  line=$(grep '"type":"step_finish"' "$jsonl" 2>/dev/null | tail -n1)
+  if [ -z "$line" ]; then
+    warn "no step_finish event found for $prefix — cost/token telemetry unavailable"
+    return 0
+  fi
+  cost=$(printf '%s\n' "$line" | grep -oE '"cost":[0-9.]+' | head -n1 | sed -E 's/^"cost":([0-9.]+)$/\1/')
+  tin=$(printf '%s\n' "$line" | grep -oE '"input":[0-9]+' | head -n1 | sed -E 's/^"input":([0-9]+)$/\1/')
+  tout=$(printf '%s\n' "$line" | grep -oE '"output":[0-9]+' | head -n1 | sed -E 's/^"output":([0-9]+)$/\1/')
+  cread=$(printf '%s\n' "$line" | grep -oE '"cache":\{[^}]*"read":[0-9]+' | grep -oE '"read":[0-9]+' | sed -E 's/^"read":([0-9]+)$/\1/')
+  {
+    echo "${prefix}_COST=$cost"
+    echo "${prefix}_TOKENS_IN=$tin"
+    echo "${prefix}_TOKENS_OUT=$tout"
+    echo "${prefix}_CACHE_READ=$cread"
+  } >> "$metrics_file"
 }

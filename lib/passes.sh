@@ -45,9 +45,10 @@ Write a SHORT brief (at most ~8 lines) to $S/intent.md capturing:
 1. What this PR is supposed to accomplish.
 2. Any explicit acceptance criteria or constraints stated in the issue/PR.
 3. What a reviewer should check the diff against.
-Be strictly factual — do NOT invent requirements. If there is no linked issue, infer intent from the title/body/commits. Output ONLY the brief to $S/intent.md. Do not review code, do not post anything." \
+Be strictly factual — do NOT invent requirements. If there is no linked issue, infer intent from the title/body/commits. Output ONLY the brief to $S/intent.md. Do not review code, do not post anything." "prep" \
     || { warn "prep (intent compression) failed — falling back to raw context"; rm -f "$SCRATCH/intent.md"; }
   echo "PREP_SECS=$((SECONDS - _tp))" >> "$METRICS"
+  oc_extract_metrics "$SCRATCH/oc-prep.jsonl" "PREP"
 fi
 
 # Pass-1 requirement context: the distilled brief when cheap routing produced
@@ -109,9 +110,10 @@ Rules that cut noise:
 
 $FORMAT_SPEC
 
-Write the records to $S/review-candidates.md with your write tool. Do not post anything. Do not edit or commit tracked files." \
+Write the records to $S/review-candidates.md with your write tool. Do not post anything. Do not edit or commit tracked files." "pass1" \
   || { GENERATE_FAILED=1; warn "pass 1 (generate) failed"; }
 echo "PASS1_SECS=$((SECONDS - _t0))" >> "$METRICS"
+oc_extract_metrics "$SCRATCH/oc-pass1.jsonl" "PASS1"
 
 # --- GATE: any candidate findings? -------------------------------------------
 if grep -qE '^@@FINDING[[:space:]]*$' "$SCRATCH/review-candidates.md" 2>/dev/null; then
@@ -141,8 +143,9 @@ DROP everything else. Recalibrate severity conservatively — when unsure, 'nit'
 
 $FORMAT_SPEC
 
-Write the survivors to $S/review-verified.md with your write tool, preserving the @@PRDESC section from the candidates. If none survive, write no @@FINDING blocks (still keep @@PRDESC). Do not post anything. Do not edit or commit tracked files." \
+Write the survivors to $S/review-verified.md with your write tool, preserving the @@PRDESC section from the candidates. If none survive, write no @@FINDING blocks (still keep @@PRDESC). Do not post anything. Do not edit or commit tracked files." "pass2" \
     || { VERIFY_FAILED=1; warn "pass 2 (verify) failed — falling back to unverified candidates"; }
+  oc_extract_metrics "$SCRATCH/oc-pass2.jsonl" "PASS2"
   # Fall back to the candidates if verify produced nothing usable OR failed — a
   # crash mid-write can leave a partial review-verified.md that -s alone passes.
   if [ ! -s "$SCRATCH/review-verified.md" ] || [ "${VERIFY_FAILED:-0}" = "1" ]; then
