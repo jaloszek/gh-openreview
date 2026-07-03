@@ -116,6 +116,38 @@ Ten roadmap questions decided (yes/no round with pawel):
 10. **Knowledge base lives in the hub fork itself** (§3.4 confirmed as the
     default; separate memory repo demoted to alternative).
 
+## Status update — 2026-07-03 (end of build session)
+
+Shipped to main (PRs #9, #10, #12–#16 + direct task commits):
+- **Tier 0 complete** (T0-1…T0-4: hardened+pinned opencode config, ingress/
+  egress sanitization) + all security quick wins.
+- **Tier 1 complete**: R (numbered hunks + anchor validation), M′
+  (kill-lists), K (confidence gating), P (compression ladder), PD
+  (PR-description rating).
+- **Tier 2**: S (edit-in-place + state block), G (incremental review +
+  patch-id skip — verified live: 14 s no-op reruns), J (inline comments,
+  opt-in), TASK-22 (restart flag + engine fingerprint), TASK-23 (prompts as
+  versioned files — **AG formally dropped**, see tasks.md).
+- **Eval suite complete** (X + expectations + quiet/subtle/noisy/kotlin
+  fixtures + source trees): 6 fixtures, budgets/must-catch, selftest.
+  First eval-gated prompt win landed: language-idiom checklist — kotlin
+  recall 5/8 → 6/8 (important-only 0.71 → 0.86), budgets held.
+- TASK-24 (org dispatch workflow + org-setup.md) merged but **dormant**;
+  the whole org/App initiative is **ON HOLD** (user decision) for a
+  separate session.
+
+Corrected eval baseline (free model, post-tree-fix): clean 0 findings;
+playground ~10-11/12; subtle union 3/3 (S01 flaky 1/5); kotlin 6/8 (K03/K06
+open); noisy criticals caught except C01 (omission class). Known weak
+classes: omission bugs, run-to-run flakiness on moderates.
+
+Pending: TASK-26 (omission-hint experiment — gate not yet run), TASK-28
+(cheap triage — implemented, lint-clean, parked ungated on
+`wip/task-28-triage` until its eval gate runs). Operational lesson: heavy
+eval usage can throttle the free tier (hangs, 0-byte event streams) — use
+`OPENREVIEW_PASS_TIMEOUT=180` for eval runs and prefer a paid cheap tier
+for gate work.
+
 ## Part 1 — Backlog, re-prioritized
 
 Goal tags: 💸 cost · 🔮 predictability · 🛡️ robustness · 🎯 quality ·
