@@ -13,11 +13,15 @@ a gateway/Bedrock). On a **public repository**, the central risk is a malicious
 pull request trying to exfiltrate that secret. The action is designed to make
 that hard, in layers:
 
-1. **The model has no exfiltration tools.** The bundled `opencode.json` denies
-   `bash`, `webfetch`, and `websearch`. The model can only read/write files
-   inside the sandboxed working directory, so it cannot read process
-   environment variables (where the key lives) or make outbound network calls —
-   even if a PR plants a prompt-injection payload in a tracked file.
+1. **The model has no exfiltration tools.** The bundled `opencode.json` removes
+   `bash`, `webfetch`, `websearch`, and `task` from the tools the model can even
+   see, and denies them again in `permission` as a backup layer (subagents
+   launched via the `task` tool are known to bypass some permission denies, so
+   removing the tool outright is the stronger control). `external_directory`
+   is also denied, so the model is confined to the sandboxed working directory
+   and cannot read process environment variables (where the key lives) or make
+   outbound network calls — even if a PR plants a prompt-injection payload in a
+   tracked file.
 
 2. **The LLM step holds no GitHub token.** PR context is pre-fetched by separate,
    token-scoped steps. The step that runs the model is given only the LLM
