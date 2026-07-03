@@ -63,15 +63,103 @@ else
 fi
 rm -f "$RAW" "$SCRATCH/.dropped"
 
-# Truncate to a line budget so a huge PR can't produce an unbounded prompt.
+# Compression ladder so a huge PR can't produce an unbounded prompt, but
+# (unlike a blunt `head`) never cuts a file's patch mid-way:
+#   1. strip deletion-only hunks; fully-deleted files become a name-only entry
+#   2. rank remaining file-patches: source files first, then by size desc
+#   3. greedily add whole file-patches until the line budget
+#   4. list every file that didn't fit, with its +/- counts
 if [ "$DIFF_MAX_LINES" -gt 0 ]; then
   total=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
   if [ "$total" -gt "$DIFF_MAX_LINES" ]; then
-    head -n "$DIFF_MAX_LINES" "$SCRATCH/pr.diff" > "$SCRATCH/pr.diff.trunc"
-    printf '\n[... diff truncated: %s of %s lines shown ...]\n' "$DIFF_MAX_LINES" "$total" >> "$SCRATCH/pr.diff.trunc"
+    CDIR="$SCRATCH/.diff-compress"
+    rm -rf "$CDIR"; mkdir -p "$CDIR"
+
+    # One file per `diff --git` block, in original order.
+    awk -v dir="$CDIR" '
+      /^diff --git / { n++; fname = sprintf("%s/%04d.patch", dir, n) }
+      n>0 { print > fname }
+    ' "$SCRATCH/pr.diff"
+
+    NON_SOURCE_EXT='\.(md|markdown|txt|json|ya?ml|toml|csv|rst|adoc)$'
+    manifest="$CDIR/manifest.tsv"
+    : > "$manifest"
+    ndeleted=0
+    : > "$CDIR/deleted.list"
+
+    for f in "$CDIR"/*.patch; do
+      [ -e "$f" ] || continue
+      path=$(head -1 "$f" | sed -E 's#^diff --git a/(.*) b/.*#\1#')
+
+      if grep -q '^deleted file mode' "$f"; then
+        echo "- $path" >> "$CDIR/deleted.list"
+        ndeleted=$((ndeleted + 1))
+        rm -f "$f"
+        continue
+      fi
+
+      # Strip hunks that contain no added lines (deletion-only hunks); keep
+      # the file header (diff/index/---/+++) as-is.
+      awk '
+        function flush() { if (!inhunk || nplus > 0) { for (i = 1; i <= nbuf; i++) print buf[i] }; nbuf = 0; nplus = 0 }
+        /^@@/ { flush(); inhunk = 1 }
+        !/^@@/ && !inhunk { print; next }
+        { nbuf++; buf[nbuf] = $0; if ($0 ~ /^\+/ && $0 !~ /^\+\+\+/) nplus++ }
+        END { flush() }
+      ' "$f" > "$f.stripped"
+      mv "$f.stripped" "$f"
+
+      hunks=$(grep -c '^@@' "$f")
+      if [ "$hunks" -eq 0 ]; then
+        echo "- $path" >> "$CDIR/deleted.list"
+        ndeleted=$((ndeleted + 1))
+        rm -f "$f"
+        continue
+      fi
+
+      lines=$(wc -l < "$f" | tr -d ' ')
+      add=$(grep -c '^+[^+]' "$f" || true)
+      del=$(grep -c '^-[^-]' "$f" || true)
+      is_source=1
+      echo "$path" | grep -Eq "$NON_SOURCE_EXT" && is_source=0
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$lines" "$is_source" "$add" "$del" "$f" >> "$manifest"
+    done
+
+    used=0
+    ninc=0
+    : > "$CDIR/selected.list"
+    : > "$CDIR/omitted.list"
+    while IFS="$(printf '\t')" read -r path lines is_source add del filepath; do
+      [ -n "$path" ] || continue
+      if [ $((used + lines)) -le "$DIFF_MAX_LINES" ]; then
+        used=$((used + lines))
+        ninc=$((ninc + 1))
+        printf '%s\n' "$filepath" >> "$CDIR/selected.list"
+      else
+        printf -- '- %s (+%s/-%s)\n' "$path" "$add" "$del" >> "$CDIR/omitted.list"
+      fi
+    done < <(sort -t "$(printf '\t')" -k3,3rn -k2,2rn "$manifest")
+
+    {
+      for f in "$CDIR"/*.patch; do
+        [ -e "$f" ] || continue
+        grep -qxF "$f" "$CDIR/selected.list" 2>/dev/null && cat "$f"
+      done
+      if [ -s "$CDIR/deleted.list" ]; then
+        printf '\n## Deleted files (not shown)\n'
+        cat "$CDIR/deleted.list"
+      fi
+      if [ -s "$CDIR/omitted.list" ]; then
+        printf '\n## Files not shown (over budget)\n'
+        cat "$CDIR/omitted.list"
+      fi
+    } > "$SCRATCH/pr.diff.trunc"
     mv "$SCRATCH/pr.diff.trunc" "$SCRATCH/pr.diff"
-    warn "diff truncated to $DIFF_MAX_LINES of $total lines"
-    echo "::notice::openreview truncated the diff to $DIFF_MAX_LINES of $total lines"
+
+    nomitted=$(wc -l < "$CDIR/omitted.list" | tr -d ' ')
+    rm -rf "$CDIR"
+    warn "diff compressed: $ninc file(s) included, $ndeleted deleted-only, $nomitted omitted over budget"
+    echo "::notice::openreview compressed the diff: $ninc file(s) included, $ndeleted deleted-only, $nomitted omitted over budget"
   fi
 fi
 
