@@ -243,6 +243,23 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
   fi
 } > "$OUT"
 
+# findings.tsv (comment-style "both" input for post.sh's inline review):
+# one row per RENDERED finding (same important-all + nit-cap selection as the
+# comment body above): sev, conf, path, line, anchored(0|1), title, body.
+FINDINGS_TSV="$SCRATCH/findings.tsv"
+awk -F'\t' -v OFS='\t' -v cap="$NIT_CAP" '
+  BEGIN { nit=0 }
+  {
+    sev=$2; loc=$3; conf=$4; title=$5; body=$6; note=$9
+    if (sev=="nit") { nit++; if (nit>cap) next }
+    path=loc; line=""
+    idx = match(loc, /:[0-9]+$/)
+    if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+    anchored = (note == "[unanchored]") ? 0 : 1
+    print sev, conf, path, line, anchored, title, body
+  }
+' "$TSV" > "$FINDINGS_TSV"
+
 ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits, ${n_suppressed} suppressed)"
 
 # Record finding counts for telemetry (metrics.sh -> step summary + outputs).

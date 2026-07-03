@@ -72,6 +72,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `bot-login` | `github-actions[bot]` | Comment author whose stale reviews are pruned. |
 | `min-confidence` | `low` | Minimum confidence (`low`/`med`/`high`) a finding must have to be rendered. Below-threshold findings are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting. |
 | `update-ping` | `false` | When `true`, editing an existing sticky comment with ≥1 important finding also posts a short unmarked ping comment; pruned on the next run. |
+| `comment-style` | `summary` | `summary` posts only the sticky summary comment. `both` additionally posts a COMMENT-event review with inline comments for anchored important findings; the summary comment always carries every finding regardless of this setting (inline posting is best-effort — a failed inline POST is logged and never fails the run). |
 
 ## Outputs
 
