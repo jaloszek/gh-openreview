@@ -1208,6 +1208,149 @@ Rules:
   assert the old table shape — check first); `shellcheck` clean;
   findings.tsv file output unchanged byte-for-byte for the same input.
 
+## TASK-35 — Eval runner: diagnosis-depth + adjacent-scope scoring
+
+**Files:** `eval/run.sh`, `eval/README.md`, selftest assets.
+**Motivation (Fable benchmark 2026-07-04):** the deepseek gap is not
+recall — it is (a) right-line-WRONG-MECHANISM diagnoses and (b) bugs whose
+mechanism lives in unchanged code next to the diff. The runner can't
+measure either today.
+
+**Spec:**
+1. Golden TSV gains two OPTIONAL trailing columns (7 and 8): `scope`
+   (`diff` default | `adjacent`) and `mechanism` (a case-insensitive ERE).
+   Old 6-column golden files keep working unchanged.
+2. Scoring per bug:
+   - `scope=diff`: hit as today (same file, line ±5). When `mechanism` is
+     non-empty, a hit whose finding title+body matches the ERE is a
+     **deep hit**; a hit that doesn't is a **shallow hit** (still counts
+     for recall, reported separately).
+   - `scope=adjacent`: match by same file + mechanism ERE against
+     title+body (mechanism REQUIRED for adjacent rows; line only as a ±15
+     tiebreaker between multiple matches). Reported as `recall_adjacent`,
+     NOT folded into main recall.
+3. Scorecard additions: `recall_deep`, `recall_adjacent`, per-bug
+   `deep m/k` where applicable.
+4. `--selftest`: canned cases for deep hit, shallow hit (right line, wrong
+   mechanism), adjacent hit, adjacent miss, 6-column back-compat.
+5. README: document the two columns with one example each.
+
+**Acceptance:** selftest passes incl. the five new cases; existing
+6-column fixtures score byte-identically; `shellcheck` clean.
+
+## TASK-36 — Hard fixture: deep-diagnosis + adjacent/interaction bugs (dual-use)
+
+**Files:** `eval/hard-src/{base,head}/…`, `eval/hard-src/BUGS.md`,
+`eval/fixtures/hard/`, `eval/golden/hard.tsv` + `hard.expect`
+(`RUNS_DEFAULT=3`), `eval/README.md`.
+**Depends on:** TASK-35. **Human review of planted bugs required — flag it.**
+**Dual use:** base/head dirs seed a SECOND permanently-open live PR
+(maintainer creates it) so the identical diff is reviewable offline by
+deepseek AND live by Fable.
+
+**Spec:** invent a NEW small Python service (different domain than metrix —
+e.g. a job-queue/billing-ledger "queued" project, 5-6 files, ~350-450 base
+lines). The head diff (~250-350 lines, PR body sells it as feature +
+refactor) plants **10 bugs**, >10 lines apart:
+- **4 deep-diagnosis** (`scope=diff` + mechanism ERE), each built so a
+  shallow reading yields a DIFFERENT plausible finding at the same line
+  (the L03 pattern): wrong-denominator/aggregation variant;
+  seconds-vs-milliseconds comparison; inverted boundary that reads as
+  cleanup; near-twin variable misuse (`subtotal` vs `total`). The
+  mechanism ERE must match only the correct explanation.
+- **3 adjacent/interaction** (`scope=adjacent` + mechanism): (a) diff
+  passes a newly-possible empty/None into an UNCHANGED helper that
+  crashes on it; (b) diff changes a constant/format unchanged code still
+  assumes; (c) diff adds increment/acquire tracking whose counterpart
+  (decrement/release) in unchanged code is never updated.
+- **2 omission** (`scope=diff`): dropped error path during refactor;
+  missing handling for a newly added case.
+- **1 easy control** (obvious null-deref).
+BUGS.md documents id/file/line/scope/category/mechanism/description +
+grep evidence. Freeze with `freeze.sh`; diff-scope golden lines must be in
+commentable-lines.tsv; base/head must pass `python3 -m py_compile`.
+
+**Acceptance:** freeze consistency passes; selftest unaffected; diffstat +
+per-bug grep evidence; README fixture list updated.
+
+## TASK-37 — Self-consistency voting (plan item W; eval-gated)
+
+**Files:** `lib/passes.sh`, `lib/common.sh` (merge helper), `lib/metrics.sh`,
+`action/action.yml` (input), `README.md`.
+**Depends on:** TASK-35/36 merged (gate uses the hard fixture).
+**Motivation:** deepseek's per-run instability (S01 1/5, L03 1-in-3) is the
+biggest measured gap vs Fable; N-pass majority voting is the published fix.
+
+**Spec:**
+1. Input `vote-passes` → `OPENREVIEW_VOTE_PASSES` (default 1 = today,
+   byte-identical). N≥2: run generate N times to
+   `$S/review-candidates-<i>.md`, diversified cheaply (pass 2: extra line
+   "Read the files in reverse order of the diff"; pass 3: "Start from the
+   smallest changed file").
+2. Deterministic awk merge into `$S/review-candidates.md`: group by same
+   file AND line ±5 across passes; votes = distinct passes contributing.
+   Keep votes ≥ 2, PLUS single-vote findings with sev important AND conf
+   high. Merged record = member with the longest body; conf upgraded to
+   high when votes == N. `@@PRDESC` from pass 1. Verify runs on the merged
+   file as usual.
+3. Metrics: `VOTE_PASSES`, `VOTE_GROUPS_KEPT`, `VOTE_SINGLETONS_DROPPED`.
+4. Fail-open: failed generate runs are skipped; one surviving run ⇒ use it
+   directly.
+5. **Eval gate (run it yourself):** `OPENREVIEW_VOTE_PASSES=3`,
+   `OPENREVIEW_PASS_TIMEOUT=180`, free model, `EVAL_RUNS=2` on `hard` and
+   `subtle` + quiet/clean k=1, before (vote=1) vs after (vote=3) — accept
+   iff hard `recall_deep` and subtle recall ≥ before, budgets hold, total
+   findings ≤ before×1.3. Report both scorecards.
+
+**Acceptance:** gate + shellcheck/actionlint/selftest; N=1 path
+byte-identical.
+
+## TASK-38 — Verify pass: confirm the MECHANISM, not just the location (eval-gated)
+
+**Files:** `prompts/verify.txt` only.
+**Depends on:** TASK-35/36 merged.
+**Motivation:** right-line-wrong-mechanism is deepseek's signature failure
+(L03: "div-by-zero" instead of "wrong denominator"). Verify only
+keeps/drops today — it never fixes a diagnosis.
+
+**Spec:** strengthen `prompts/verify.txt` criterion 2 to: "the claim is
+factually correct about that code — re-derive the failure mechanism step
+by step from the actual code (what value flows where, what exactly goes
+wrong). If the LOCATION is right but the stated mechanism is wrong or
+shallow (a deeper semantic bug exists on the same line), REWRITE the title
+and body to the correct mechanism instead of dropping the finding. Keep
+the record format. Never invent a new finding at a new location —
+rewriting only applies to findings you are keeping."
+**Eval gate (run it yourself):** free model, `PASS_TIMEOUT=180`,
+`EVAL_RUNS=3` on `hard` before/after + quiet/clean k=1 — accept iff
+`recall_deep` improves (or holds at max), recall not lower, budgets hold.
+One wording iteration; on final failure revert and report both scorecards.
+
+## TASK-39 — Adjacent-interaction scan instruction (eval-gated)
+
+**Files:** `prompts/generate.txt` only.
+**Depends on:** TASK-35/36 merged.
+**Motivation:** Fable's bonus-findings class — bugs whose mechanism lives
+in unchanged code the diff interacts with.
+
+**Spec:** ONE paragraph in `prompts/generate.txt`:
+"The diff is not the whole bug surface. For every function the diff
+modifies or calls, read the FULL function (and its counterpart functions
+in the same file) in the project tree, and check: (a) does the change
+break an assumption in unchanged code — a newly-possible value flowing
+into an old helper, a changed constant or format another function still
+relies on? (b) does the change have a missing counterpart — an increment
+whose decrement was never added, a registration without cleanup, one side
+of a pairing updated without the other? Anchor such findings to the diff
+line that creates the problem (or, for missing counterparts, cite where
+the missing code belongs). These must be concrete mechanisms you verified
+by reading the code — never speculation."
+**Eval gate (run it yourself):** free model, `PASS_TIMEOUT=180`,
+`EVAL_RUNS=3` on `hard` before/after + quiet/clean k=1 + playground k=1 —
+accept iff `recall_adjacent` improves to ≥2/3 (union), main recall and
+budgets hold, playground not worse. One wording iteration; revert on final
+failure with both scorecards.
+
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
