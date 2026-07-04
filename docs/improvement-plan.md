@@ -158,6 +158,30 @@ eval usage can throttle the free tier (hangs, 0-byte event streams) — use
 `OPENREVIEW_PASS_TIMEOUT=180` for eval runs and prefer a paid cheap tier
 for gate work.
 
+## Benchmark: Fable vs our deepseek pipeline (playground PR #19, 2026-07-04)
+
+First head-to-head on the seeded 8-bug diff (answer key `eval/live-src/BUGS.md`):
+
+| | Fable (claude-code-action, 1 prompt) | Ours (deepseek-v4-flash, 2-pass) |
+|---|---|---|
+| Seeded bugs found (per run) | **8/8** | 6/8 (union across runs 8/8) |
+| Deep diagnosis (L03 denominator, L04 truncation) | both, every time | L03 1-in-3 runs; L04 shallow-adjacent |
+| Bonus real findings | ~4 (missing decrement, stream-contract, zip truncate, pre-existing flagged AS pre-existing) | 0 |
+| Severity calibration | stable, sensible 5-level ladder | flaky run-to-run (8-important vs 3+3) |
+| False positives | 0 | 0 |
+| Cost/run | ~$1.47 (+ a lost $1.47 run: posting died on a tool-permission subtlety) | ~$0.003 free / ~$0.01 paid |
+| Output reliability | model posts ⇒ can silently fail | deterministic render+post, fail-closed |
+
+Gap analysis vs the mission: recall gap is small (and union-recall zero);
+the real gaps are **diagnosis depth stability** and **severity calibration**
+— both targeted by existing backlog items (W self-consistency voting for
+stability; a verify-pass "confirm the mechanism, not just the location"
+criterion; severity anchoring). Structure already wins on cost (~150-500×)
+and on output reliability. Fable's bonus-findings ability (cross-cutting
+reasoning like "nothing ever decrements") is the hardest gap — candidate
+lever: the co-change/blame context + a dedicated "what ELSE is wrong with
+the functions this diff touches" instruction.
+
 ## Part 1 — Backlog, re-prioritized
 
 Goal tags: 💸 cost · 🔮 predictability · 🛡️ robustness · 🎯 quality ·
