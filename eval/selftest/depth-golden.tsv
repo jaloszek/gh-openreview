@@ -1,5 +1,0 @@
-# id	file	line	category	sev	description	scope	mechanism
-D01	lib/foo.py	10	logic	important	off_by_one: loop range excludes the final element, undercounting	diff	skips the last
-D02	lib/foo.py	30	logic	important	round_it: integer division truncates instead of rounding	diff	truncat(e|ion)
-D03	lib/bar.py	5	race	important	acquire: increments a counter with no matching decrement elsewhere in the file	adjacent	counter is (never|not) decremented
-D04	lib/bar.py	50	resource-leak	important	acquire: takes a lock that is never released by unchanged code	adjacent	lock is (never|not) released
