@@ -4,7 +4,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-MIN_CHARGE_CENTS = 100
+# Micro-charges (e.g. free-tier usage that still needs a paper trail) are now
+# allowed as zero-cost ledger entries instead of being rejected.
+MIN_CHARGE_CENTS = 0
 
 
 class LedgerEntry:
@@ -22,13 +24,14 @@ class Ledger:
         self._entries = []
 
     def record_charge(self, tenant_id, amount_cents, kind):
-        """Persist a charge, retrying once on a transient store failure."""
+        """Persist a charge and record it in the in-memory ledger.
+
+        Retrying on a transient store failure is now `RetryingStore`'s job
+        (see `store.py`), so `Ledger` itself no longer needs to know about
+        `IOError` at all.
+        """
         entry = LedgerEntry(tenant_id, amount_cents, kind)
-        try:
-            self._store.write(entry)
-        except IOError:
-            logger.warning("ledger write failed for %s, retrying once", tenant_id)
-            self._store.write(entry)
+        self._store.write(entry)
         self._entries.append(entry)
         return entry
 
@@ -56,5 +59,7 @@ def apply_discount(order):
     order.subtotal = sum(item.price_cents for item in order.items)
     order.total = order.subtotal - order.discount_cents
     order.tax_cents = int(order.total * order.tax_rate)
-    order.total = order.total + order.tax_cents
+    # Tax is a percentage of the pre-tax subtotal, so recompute the final
+    # total from the subtotal rather than re-adding onto `order.total`.
+    order.total = order.subtotal + order.tax_cents
     return order.total
