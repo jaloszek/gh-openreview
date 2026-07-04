@@ -38,7 +38,7 @@ EXPECT_FAIL=0  # a fixture violated its .expect budget/must-catch
 # --- parsing & matching (shared by real runs and --selftest) ------------------
 
 # parse_findings <review-verified.md>
-# stdout TSV, one row per @@FINDING record: sev \t path \t line \t title
+# stdout TSV, one row per @@FINDING record: sev \t path \t line \t title \t body
 parse_findings() {
   awk '
     function flush() {
@@ -49,9 +49,10 @@ parse_findings() {
         if (idx > 0) { path = substr(loc, 1, idx - 1); line = substr(loc, idx + 1) + 0 }
         if (sev != "important") sev = "nit"
         gsub(/\t/, " ", title)
-        printf "%s\t%s\t%s\t%s\n", sev, path, line, title
+        gsub(/\t/, " ", body)
+        printf "%s\t%s\t%s\t%s\t%s\n", sev, path, line, title, body
       }
-      have = 0; sev = ""; loc = ""; title = ""
+      have = 0; sev = ""; loc = ""; title = ""; body = ""
     }
     /^@@PRDESC[[:space:]]*$/ { flush(); mode = ""; next }
     /^@@FINDING[[:space:]]*$/ { flush(); mode = "f"; have = 1; next }
@@ -59,6 +60,7 @@ parse_findings() {
       if      ($0 ~ /^sev:/)   { sub(/^sev:[[:space:]]*/, "");   sev = tolower($0) }
       else if ($0 ~ /^loc:/)   { sub(/^loc:[[:space:]]*/, "");   loc = $0 }
       else if ($0 ~ /^title:/) { sub(/^title:[[:space:]]*/, ""); title = $0 }
+      else if ($0 ~ /^body:/)  { sub(/^body:[[:space:]]*/, "");  body = $0 }
     }
     END { flush() }
   ' "$1"
@@ -66,30 +68,57 @@ parse_findings() {
 
 # score_run <findings.tsv> <golden.tsv> <perbug-out>
 # stdout: nfindings \t nmatched \t nimportant \t nnit
-# perbug-out: <bug-id> \t <0|1 hit-any> \t <0|1 hit-as-important> for every
-# golden bug, in golden order.
+# perbug-out: <bug-id> \t <0|1 hit-any> \t <0|1 hit-as-important> \t
+#             <0|1 deep-hit> \t <0|1 adjacent-hit> for every golden bug, in
+#             golden order.
+#
+# Golden columns 7 (scope: diff|adjacent, default diff) and 8 (mechanism: a
+# case-insensitive ERE, optional) are new and back-compat: 6-column rows are
+# treated as scope=diff, mechanism="".
+#
+# scope=diff: hit as before (same file, line +-tol). When mechanism is set,
+#   a hit whose matched finding's title+body matches it is a deep hit;
+#   otherwise it is a shallow hit (still counts for recall/hit).
+# scope=adjacent: mechanism required. Matched by file + mechanism only (line
+#   is not part of the hit test); reported as adjacent-hit and NOT folded
+#   into hit/hitimp (adjacent recall is tracked separately by the caller).
+# Case-insensitivity is implemented by lower-casing both the mechanism ERE
+# and the searched text before match() (works under plain POSIX awk).
 score_run() {
   awk -F'\t' -v OFS='\t' -v tol="$TOL" -v perbug="$3" '
     NR == FNR {
       if ($0 ~ /^#/ || NF < 3) next
       ng++; gid[ng] = $1; gfile[ng] = $2; gline[ng] = $3 + 0
+      gscope[ng] = (NF >= 7 && $7 != "") ? $7 : "diff"
+      gmech[ng]  = (NF >= 8) ? tolower($8) : ""
       next
     }
-    NF >= 3 { nf++; fsev[nf] = $1; ffile[nf] = $2; fline[nf] = $3 + 0 }
+    NF >= 4 {
+      nf++; fsev[nf] = $1; ffile[nf] = $2; fline[nf] = $3 + 0
+      ftext[nf] = tolower($4 (NF >= 5 ? " " $5 : ""))
+    }
     END {
       for (i = 1; i <= nf; i++) {
         m = 0
         for (g = 1; g <= ng; g++) {
+          if (gscope[g] == "adjacent") {
+            if (gmech[g] != "" && ffile[i] == gfile[g] && ftext[i] ~ gmech[g]) {
+              adjhit[g] = 1
+            }
+            continue
+          }
           d = fline[i] - gline[g]; if (d < 0) d = -d
           if (ffile[i] == gfile[g] && d <= tol) {
             m = 1; hit[g] = 1
             if (fsev[i] == "important") hitimp[g] = 1
+            if (gmech[g] != "" && ftext[i] ~ gmech[g]) deephit[g] = 1
           }
         }
         if (m) matched++
         if (fsev[i] == "important") nimp++; else nnit++
       }
-      for (g = 1; g <= ng; g++) print gid[g], (g in hit ? 1 : 0), (g in hitimp ? 1 : 0) > perbug
+      for (g = 1; g <= ng; g++)
+        print gid[g], (g in hit ? 1 : 0), (g in hitimp ? 1 : 0), (g in deephit ? 1 : 0), (g in adjhit ? 1 : 0) > perbug
       print nf + 0, matched + 0, nimp + 0, nnit + 0
     }
   ' "$2" "$1"
@@ -300,43 +329,58 @@ EOF
     return 0
   fi
 
-  # Per-bug aggregate over successful runs: id, category, sev, hit-any, hit-important, k.
+  # Per-bug aggregate over successful runs:
+  # id, category, sev, hit-any, hit-important, k, scope, deep-hits, adjacent-hits.
   awk -F'\t' -v OFS='\t' -v k="$ok_runs" '
     NR == FNR {
       if ($0 ~ /^#/ || NF < 5) next
       n++; id[n] = $1; cat[n] = $4; sev[n] = $5
+      scope[n] = (NF >= 7 && $7 != "") ? $7 : "diff"
       next
     }
-    { hits[$1] += $2; hitsimp[$1] += $3 }
-    END { for (i = 1; i <= n; i++) print id[i], cat[i], sev[i], hits[id[i]] + 0, hitsimp[id[i]] + 0, k }
+    { hits[$1] += $2; hitsimp[$1] += $3; deep[$1] += $4; adj[$1] += $5 }
+    END {
+      for (i = 1; i <= n; i++)
+        print id[i], cat[i], sev[i], hits[id[i]] + 0, hitsimp[id[i]] + 0, k, scope[i], deep[id[i]] + 0, adj[id[i]] + 0
+    }
   ' "$golden" "$fdir"/run*/perbug.tsv > "$fdir/perbug-agg.tsv"
 
-  # Recall: a bug counts as found when hit in >=1 run.
-  local rec_all rec_imp precision
-  rec_all=$(awk -F'\t' '{ n++; if ($4 > 0) f++ } END { printf "%d/%d = %.2f", f + 0, n, (n ? (f + 0) / n : 0) }' "$fdir/perbug-agg.tsv")
-  rec_imp=$(awk -F'\t' '$3 == "important" { n++; if ($4 > 0) f++ } END { printf "%d/%d = %.2f", f + 0, n, (n ? (f + 0) / n : 0) }' "$fdir/perbug-agg.tsv")
+  # Recall: a bug counts as found when hit in >=1 run. scope=adjacent bugs are
+  # excluded from overall/important/deep recall and scored only via
+  # recall_adjacent (mechanism-only match, not folded into main recall).
+  local rec_all rec_imp rec_deep rec_adj precision
+  rec_all=$(awk -F'\t' '$7 != "adjacent" { n++; if ($4 > 0) f++ } END { printf "%d/%d = %.2f", f + 0, n, (n ? (f + 0) / n : 0) }' "$fdir/perbug-agg.tsv")
+  rec_imp=$(awk -F'\t' '$7 != "adjacent" && $3 == "important" { n++; if ($4 > 0) f++ } END { printf "%d/%d = %.2f", f + 0, n, (n ? (f + 0) / n : 0) }' "$fdir/perbug-agg.tsv")
+  rec_deep=$(awk -F'\t' '$7 != "adjacent" && $4 > 0 { n++; if ($8 > 0) f++ } END { printf "%d/%d = %.2f", f + 0, n, (n ? (f + 0) / n : 0) }' "$fdir/perbug-agg.tsv")
+  rec_adj=$(awk -F'\t' '$7 == "adjacent" { n++; if ($9 > 0) f++ } END { printf "%d/%d = %.2f", f + 0, n, (n ? (f + 0) / n : 0) }' "$fdir/perbug-agg.tsv")
   precision=$(awk -v m="$t_match" -v t="$t_nf" 'BEGIN { printf "%d/%d = %.2f", m, t, (t ? m / t : 0) }')
 
   printf 'precision (matched findings / all findings): %s\n' "$precision"
   printf 'recall overall:        %s\n' "$rec_all"
   printf 'recall important-only: %s\n' "$rec_imp"
+  printf 'recall deep (of hit, scope=diff w/ mechanism): %s\n' "$rec_deep"
+  printf 'recall adjacent:       %s\n' "$rec_adj"
   printf 'recall by category:\n'
   awk -F'\t' '
-    { n[$2]++; if ($4 > 0) f[$2]++ }
+    $7 != "adjacent" { n[$2]++; if ($4 > 0) f[$2]++ }
     END { for (c in n) printf "  %-15s %d/%d\n", c, f[c] + 0, n[c] }
   ' "$fdir/perbug-agg.tsv" | LC_ALL=C sort
   printf 'per-bug (found m/k):\n'
-  awk -F'\t' '{ printf "  %-4s %-15s %-10s found %d/%d\n", $1, $2, $3, $4, $6 }' "$fdir/perbug-agg.tsv"
+  awk -F'\t' '{ printf "  %-4s %-15s %-10s found %d/%d  deep %d/%d  adj %d/%d\n", $1, $2, $3, $4, $6, $8, $6, $9, $6 }' "$fdir/perbug-agg.tsv"
 
   {
     printf '%s\tprecision\t%s\n' "$name" "$precision"
     printf '%s\trecall_overall\t%s\n' "$name" "$rec_all"
     printf '%s\trecall_important\t%s\n' "$name" "$rec_imp"
+    printf '%s\trecall_deep\t%s\n' "$name" "$rec_deep"
+    printf '%s\trecall_adjacent\t%s\n' "$name" "$rec_adj"
     awk -F'\t' -v fx="$name" -v OFS='\t' '
-      { n[$2]++; if ($4 > 0) f[$2]++ }
+      $7 != "adjacent" { n[$2]++; if ($4 > 0) f[$2]++ }
       END { for (c in n) print fx, "recall_cat:" c, (f[c] + 0) "/" n[c] }
     ' "$fdir/perbug-agg.tsv" | LC_ALL=C sort
     awk -F'\t' -v fx="$name" -v OFS='\t' '{ print fx, "bug:" $1, $4 "/" $6 }' "$fdir/perbug-agg.tsv"
+    awk -F'\t' -v fx="$name" -v OFS='\t' '$4 > 0 { print fx, "deep:" $1, $8 "/" $6 }' "$fdir/perbug-agg.tsv"
+    awk -F'\t' -v fx="$name" -v OFS='\t' '$7 == "adjacent" { print fx, "adj:" $1, $9 "/" $6 }' "$fdir/perbug-agg.tsv"
     printf '%s\tstatus\tscored\n' "$name"
   } >> "$SCORECARD"
 
@@ -388,15 +432,20 @@ selftest() {
   # --- expectation grading: budget pass/fail, must-catch hit/miss, expect-only
 
   # Per-bug aggregate (1 run) from the same 6 canned findings, needed for the
-  # MUST_CATCH checks below: id, cat, sev, hit-any, hit-important, k.
+  # MUST_CATCH checks below: id, cat, sev, hit-any, hit-important, k, scope,
+  # deep-hits, adjacent-hits.
   awk -F'\t' -v OFS='\t' -v k=1 '
     NR == FNR {
       if ($0 ~ /^#/ || NF < 5) next
       n++; id[n] = $1; cat[n] = $4; sev[n] = $5
+      scope[n] = (NF >= 7 && $7 != "") ? $7 : "diff"
       next
     }
-    { hits[$1] += $2; hitsimp[$1] += $3 }
-    END { for (i = 1; i <= n; i++) print id[i], cat[i], sev[i], hits[id[i]] + 0, hitsimp[id[i]] + 0, k }
+    { hits[$1] += $2; hitsimp[$1] += $3; deep[$1] += $4; adj[$1] += $5 }
+    END {
+      for (i = 1; i <= n; i++)
+        print id[i], cat[i], sev[i], hits[id[i]] + 0, hitsimp[id[i]] + 0, k, scope[i], deep[id[i]] + 0, adj[id[i]] + 0
+    }
   ' "$golden" "$tdir/perbug.tsv" > "$tdir/perbug-agg.tsv"
 
   # Case 1: budget pass — the canned run has 4 importants, 2 nits, 6 total.
@@ -447,6 +496,31 @@ selftest() {
   fi
 
   EXPECT_FAIL=0
+
+  # --- scope/mechanism columns (TASK-35): deep hit, shallow hit, adjacent
+  # hit, adjacent miss, and 6-column back-compat (the playground.tsv checks
+  # above never used scope/mechanism and still produced identical stats).
+  parse_findings "$EVAL_DIR/selftest/depth-findings.md" > "$tdir/depth-findings.tsv"
+  : > "$tdir/depth-perbug.tsv"
+  score_run "$tdir/depth-findings.tsv" "$EVAL_DIR/selftest/depth-golden.tsv" "$tdir/depth-perbug.tsv" > /dev/null
+
+  # D01: same-line hit whose title+body matches the mechanism ERE -> deep hit.
+  # D02: same-line hit whose title+body does NOT match the mechanism -> shallow
+  #      hit (hit=1 but deephit=0). D03: scope=adjacent, mechanism matches a
+  #      finding far from the golden line -> adjacent hit, main hit stays 0.
+  # D04: scope=adjacent, no finding matches the mechanism -> adjacent miss.
+  for bug in D01:1:1:1:0 D02:1:1:0:0 D03:0:0:0:1 D04:0:0:0:0; do
+    id="${bug%%:*}"; rest="${bug#*:}"
+    want_hit="${rest%%:*}"; rest="${rest#*:}"
+    want_hitimp="${rest%%:*}"; rest="${rest#*:}"
+    want_deep="${rest%%:*}"; want_adj="${rest#*:}"
+    got=$(awk -F'\t' -v id="$id" '$1 == id { print $2 "," $3 "," $4 "," $5 }' "$tdir/depth-perbug.tsv")
+    want="$want_hit,$want_hitimp,$want_deep,$want_adj"
+    if [ "$got" != "$want" ]; then
+      warn "selftest: $id — want hit,hitimp,deep,adj=$want got ${got:-<absent>}"
+      fails=$((fails + 1))
+    fi
+  done
 
   [ "$fails" -eq 0 ] || die "selftest: $fails check(s) failed"
   ok "selftest: PASS (parse + match + clean-verdict + expectations, no LLM call)"

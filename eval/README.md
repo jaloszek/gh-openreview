@@ -28,6 +28,41 @@ The output is a **scorecard**:
   (the rest is potential noise)
 - **per-bug `found m/k`** — with `EVAL_RUNS=3`, each bug shows how many of
   the 3 runs caught it. A bug found 1/3 is *flaky*, not caught.
+- **`recall_deep`** — of the bugs it found (right file/line), how many did
+  it diagnose for the *right reason*? A golden row can carry an optional
+  `mechanism` ERE (see below); a matched finding whose title+body doesn't
+  match it is a **shallow hit** — right line, wrong explanation.
+- **`recall_adjacent`** — bugs whose root cause lives in unchanged code next
+  to the diff, matched by mechanism only (not line). Reported separately,
+  never folded into the main recall numbers.
+
+### Golden TSV columns 7–8 (optional, back-compat)
+
+`id file line category sev description` is the original 6-column format and
+still works unchanged. Two optional trailing columns add depth/adjacency
+scoring:
+
+- **`scope`** — `diff` (default, if omitted) or `adjacent`. `adjacent` means
+  the bug's mechanism lives in code the diff didn't touch; it's matched by
+  file + `mechanism` only (line is not part of the hit test), and it's
+  reported under `recall_adjacent`, never the main recall.
+- **`mechanism`** — a case-insensitive ERE matched against the winning
+  finding's `title` + `body`. For `scope=diff` it's optional and splits a
+  line-hit into deep (matches) vs. shallow (doesn't); for `scope=adjacent`
+  it's **required** — it's the only way an adjacent bug is ever matched.
+  Case-insensitivity works by lower-casing both the pattern and the text
+  before matching, so avoid uppercase-only character classes (`[A-Z]`) in a
+  mechanism ERE — they will never match.
+
+Examples:
+
+```
+# scope=diff + mechanism: same-line hit graded deep vs. shallow
+D01	lib/foo.py	10	logic	important	off-by-one undercounts	diff	skips the last
+
+# scope=adjacent: only matched by mechanism, anywhere in the file
+D03	lib/bar.py	5	race	important	counter never decremented by unchanged code	adjacent	counter is (never|not) decremented
+```
 
 Why repetitions? Hosted models are nondeterministic even at temperature 0 —
 a single run can flatter or slander a prompt change. k=3 is the practical
