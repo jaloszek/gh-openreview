@@ -1,8 +1,0 @@
-# id	file	line	category	sev	description
-C01	metrix/eventbuffer.py	28	error-handling	important	push: when the buffer is full the event is silently dropped with no log line — billing events are lost with zero trace
-C02	metrix/exporter.py	20	security	important	_export_path: filename is joined into EXPORT_DIR unsanitized, so a caller-supplied "../../etc/passwd"-style filename reads/writes outside EXPORT_DIR (path traversal)
-C03	metrix/scheduler.py	31	logic	important	_due: DEFAULT_JOBS includes "flush-pending" with no "interval" key, so job["interval"] raises KeyError on the very first tick — the scheduler crashes on startup with the default job list
-M01	metrix/notifications.py	27	logic	important	notify: idempotency_key is built from tenant+event_type only, so two distinct invoice_ready events for the same tenant collide and the second is dropped by any receiver that dedupes on it
-M02	metrix/retry.py	25	logic	important	wrapper: backoff delay is base_delay * attempt (linear), not exponential as documented — retries hammer the billing API faster than intended under sustained failures
-M03	metrix/metrics_registry.py	20	logic	important	increment/set_gauge: keyed by name only, ignoring the unit parameter — two metrics sharing a name but different units silently overwrite each other
-M04	metrix/validators.py	16	logic	important	validate_percentage: the range check is inverted — returns True (valid) for out-of-range values and False (valid) for in-range ones
