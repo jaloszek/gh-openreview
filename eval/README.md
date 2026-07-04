@@ -28,6 +28,41 @@ The output is a **scorecard**:
   (the rest is potential noise)
 - **per-bug `found m/k`** — with `EVAL_RUNS=3`, each bug shows how many of
   the 3 runs caught it. A bug found 1/3 is *flaky*, not caught.
+- **`recall_deep`** — of the bugs it found (right file/line), how many did
+  it diagnose for the *right reason*? A golden row can carry an optional
+  `mechanism` ERE (see below); a matched finding whose title+body doesn't
+  match it is a **shallow hit** — right line, wrong explanation.
+- **`recall_adjacent`** — bugs whose root cause lives in unchanged code next
+  to the diff, matched by mechanism only (not line). Reported separately,
+  never folded into the main recall numbers.
+
+### Golden TSV columns 7–8 (optional, back-compat)
+
+`id file line category sev description` is the original 6-column format and
+still works unchanged. Two optional trailing columns add depth/adjacency
+scoring:
+
+- **`scope`** — `diff` (default, if omitted) or `adjacent`. `adjacent` means
+  the bug's mechanism lives in code the diff didn't touch; it's matched by
+  file + `mechanism` only (line is not part of the hit test), and it's
+  reported under `recall_adjacent`, never the main recall.
+- **`mechanism`** — a case-insensitive ERE matched against the winning
+  finding's `title` + `body`. For `scope=diff` it's optional and splits a
+  line-hit into deep (matches) vs. shallow (doesn't); for `scope=adjacent`
+  it's **required** — it's the only way an adjacent bug is ever matched.
+  Case-insensitivity works by lower-casing both the pattern and the text
+  before matching, so avoid uppercase-only character classes (`[A-Z]`) in a
+  mechanism ERE — they will never match.
+
+Examples:
+
+```
+# scope=diff + mechanism: same-line hit graded deep vs. shallow
+D01	lib/foo.py	10	logic	important	off-by-one undercounts	diff	skips the last
+
+# scope=adjacent: only matched by mechanism, anywhere in the file
+D03	lib/bar.py	5	race	important	counter never decremented by unchanged code	adjacent	counter is (never|not) decremented
+```
 
 Why repetitions? Hosted models are nondeterministic even at temperature 0 —
 a single run can flatter or slander a prompt change. k=3 is the practical
@@ -101,6 +136,27 @@ gitignored.
   dropped `runCatching` failure, an unsynchronized `MutableList` shared
   across coroutines, an off-by-one `until`/`..` swap). Answer key:
   `eval/golden/kotlin.tsv`; recall-only, no expect file, like `playground`.
+- **`hard/`** — an invented job-queue + billing-ledger service (`queued/`,
+  5 files) whose "feat: ad-hoc jobs, cancellation, lease tracking + ledger
+  cleanup" PR plants **10 bugs** aimed squarely at the two gaps `scope`/
+  `mechanism` scoring exists to measure: **4 deep-diagnosis** bugs where the
+  same line also admits a different, wrong, equally-plausible finding (a
+  wrong-denominator aggregation, a seconds-vs-milliseconds comparison, a
+  `<`/`<=` boundary flip dressed up as cleanup, a `subtotal`/`total`
+  near-twin mix-up that drops a discount); **3 adjacent/interaction** bugs
+  whose mechanism lives in code the diff never touches (a newly-possible
+  `None` hits an unchanged helper, a changed constant an unchanged check
+  still assumes, a new lease counter whose unchanged release path never
+  updates it); **2 omissions** (a dropped retry, a new status case missing
+  from an unchanged label map); **1 easy control** (an obvious null-deref).
+  Source at `eval/hard-src/{base,head}/`, answer key at `eval/hard-src/BUGS.md`
+  (id/file/line/scope/category/mechanism/description + grep evidence) and
+  `eval/golden/hard.tsv` (`eval/golden/hard.expect`: `RUNS_DEFAULT=3`).
+  **Dual-use:** `eval/hard-src/{base,head}` also seed a second, permanently
+  open live playground PR (see "Live playground PR" below) so the identical
+  diff can be reviewed offline (this fixture) and live (Fable) side by side.
+  Human review of the planted bugs is recommended before trusting this
+  fixture for scoring.
 
 ## Design rationale — the three review scenarios
 
