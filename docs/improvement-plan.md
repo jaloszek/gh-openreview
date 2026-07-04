@@ -126,6 +126,28 @@ Ten roadmap questions decided (yes/no round with pawel):
 10. **Knowledge base lives in the hub fork itself** (§3.4 confirmed as the
     default; separate memory repo demoted to alternative).
 
+## Status update — 2026-07-04 (context/format/benchmark session)
+
+Shipped on top of the 07-03 state:
+- **Context wave** (PR #18): open-PR overlap, regression radar, co-change
+  coupling — all absent-silent, all verified firing live on their own PR.
+- **Live playground PR #19** (permanent, 8 seeded bugs, `eval/live-src/`):
+  first report card 8/8 line-hits, 0 FPs; restart + fingerprint + skip all
+  exercised live.
+- **Minimal comment format** (PR #20 + header-tally tweak): flat priority
+  list with 🔴/🟠/🟡 dots + collapsed machine-readable agent block, design
+  validated against a raw-markdown study of 6 competitors' comments.
+- **TASK-29 config merge** (PR #17): consumer opencode.json can no longer
+  weaken the sandbox. **oc_run watchdog** (macOS had NO timeout — hung
+  calls ran unbounded); **sanitizer VS-16 fix** (emoji selectors were being
+  stripped from real diffs).
+- **Fable benchmark harness**: `claude-code-review.yml` (Fable model,
+  manual/`claude-review`-label only) + first head-to-head results (see the
+  Benchmark section above). Mission statement added to Direction.
+- **In flight (autonomous overnight run)**: tasks 35-39 — hard-eval wave
+  (depth/adjacent scoring, hard fixture, voting, mechanism-verify,
+  adjacent scan), then benchmark v2.
+
 ## Status update — 2026-07-03 (end of build session)
 
 Shipped to main (PRs #9, #10, #12–#16 + direct task commits):
