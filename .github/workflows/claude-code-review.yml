@@ -47,7 +47,7 @@ jobs:
           track_progress: ${{ github.event_name == 'pull_request' }}
           use_sticky_comment: false
           include_fix_links: false
-          show_full_output: ${{ runner.debug == '1' }}
+          show_full_output: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
@@ -100,7 +100,7 @@ jobs:
           claude_args: |
             --max-turns 60
             --model claude-fable-5
-            --allowedTools "pull_request_review_write,add_comment_to_pending_review,mcp__github_comment__update_claude_comment,Bash(gh api *),Bash(gh pr comment *),Bash(gh pr diff *),Bash(gh pr view *),Read,Glob,Grep"
+            --allowedTools "pull_request_review_write,add_comment_to_pending_review,mcp__github_comment__update_claude_comment,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Write,Glob,Grep"
 
       - name: Cleanup old review comments
         env:
