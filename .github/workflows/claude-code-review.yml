@@ -2,7 +2,7 @@ name: "Claude Code Review"
 
 # Opt-in comparison reviewer (vs the automatic opencode self-test). Fires ONLY:
 #   - manually via workflow_dispatch with a PR number, or
-#   - when the `opus-review` label is added to a PR.
+#   - when the `claude-review` label is added to a PR.
 # Nothing runs on plain pushes/opens — this is a paid, on-demand second opinion.
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
   review:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.label.name == 'opus-review'
+      github.event.label.name == 'claude-review'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

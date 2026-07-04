@@ -8,6 +8,16 @@ pre-implementation research pass live in
 
 ## Direction
 
+**Mission (pawel, 2026-07-04):** match the review quality of a frontier
+model (Claude Fable via claude-code-action, one prompt, one agent) using
+`deepseek-v4-flash` — a far weaker model — by exploiting the two advantages
+the weak-model side has: **better curated context** (intent brief, numbered
+diff, regression radar, co-change, open-PR overlap, team memory) and
+**more structure** (multi-pass generate→verify, cheap-tier routing,
+deterministic grounding and rendering). The label-gated Fable review in
+`.github/workflows/claude-code-review.yml` is the standing benchmark: same
+PRs, side by side, scored against the playground answer key.
+
 The product stays what it is: an **OpenCode-agentic, plain-bash GitHub Action**
 — no server, no database, no build step. The strategy is to absorb the best
 ideas from the field (see `competitors.md`) while skipping as much
