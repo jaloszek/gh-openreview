@@ -1,22 +1,25 @@
 name: "Claude Code Review"
 
-# Manual, on-demand review of a specific PR. Unlike the opencode self-test
-# (which runs automatically on every PR), this is dispatched by hand and takes
-# the PR number as input, so there is no pull_request event to read it from.
+# Opus is no longer the default reviewer — opencode-review.yml reviews every PR
+# for free. This workflow is now an opt-in fallback: add the `opus-review` label
+# to a PR to fire it (the `labeled` trigger + the job-level `if` guard below).
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "PR number to review"
-        required: true
-        type: string
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened, labeled]
 
 concurrency:
-  group: claude-code-review-${{ inputs.pr_number }}
+  group: claude-code-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   review:
+    # Fire on opened/synchronize/reopened/ready_for_review when the label is
+    # already present; on a `labeled` event, only when the label JUST added is
+    # `opus-review` — otherwise adding any unrelated label to an already-labeled
+    # PR would needlessly re-run the paid Opus review.
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'opus-review') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'opus-review')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -24,10 +27,9 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
-      - name: Checkout PR head
+      - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          ref: refs/pull/${{ inputs.pr_number }}/head
           fetch-depth: 0
 
       - name: PR Review with Progress Tracking
@@ -35,15 +37,13 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # track_progress only supports PR/issue events, not workflow_dispatch,
-          # so it must stay false here; the prompt tells Claude to post the review.
-          track_progress: false
+          track_progress: true
           use_sticky_comment: false
           include_fix_links: false
           show_full_output: ${{ runner.debug == '1' }}
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ inputs.pr_number }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
 
             Perform a comprehensive code review with the following focus areas:
 
@@ -84,11 +84,6 @@ jobs:
             - ⚪ Info — intentional trade-offs, acknowledged risks, noting good practice
             - ✅ None — no action needed, noting good design
 
-            When done, post your review on PR #${{ inputs.pr_number }} as a single
-            PR comment using the available tools. The comment body MUST start with
-            this exact line so older runs can be cleaned up:
-            ## 🔍 Code Review
-
           claude_args: |
             --max-turns 60
             --model opus
@@ -98,19 +93,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PR_NUMBER=${{ inputs.pr_number }}
+          PR_NUMBER=${{ github.event.pull_request.number }}
           REPO=${{ github.repository }}
           KEEP_LAST=1
 
           # Both Claude review and this step use GITHUB_TOKEN (github-actions[bot]),
-          # so deleting own comments does not generate notifications. Claude starts
-          # each review with the "🔍 Code Review" marker (see prompt). gh's --jq runs
-          # per page but emits a flat, oldest-first id stream across all pages, so
-          # dropping the newest KEEP_LAST and deleting the rest stays correct even
-          # when comments span more than one page.
-          ALL_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | test("🔍 Code Review")) | .id')
-          COMMENT_IDS=$(printf '%s\n' "$ALL_IDS" | sed '/^$/d' | awk -v k="$KEEP_LAST" '{a[NR]=$0} END{for(i=1;i<=NR-k;i++) print a[i]}')
+          # so deleting own comments does not generate notifications.
+          COMMENT_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude finished")) | .id] | reverse | .['${KEEP_LAST}':][]')
 
           if [ -z "$COMMENT_IDS" ]; then
             echo "No old comments to clean up"
