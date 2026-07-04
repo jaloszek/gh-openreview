@@ -1275,6 +1275,13 @@ per-bug grep evidence; README fixture list updated.
 
 ## TASK-37 — Self-consistency voting (plan item W; eval-gated)
 
+> **ATTEMPTED 2026-07-04 — GATE FAILED, REVERTED.** vote=3/k=2 on `hard`:
+> D01 stabilized 1/3→2/2 (the target!) but aggregate deep-recall DROPPED
+> 2/6 vs base 3/6 — the "longest body wins" merge heuristic picks verbose
+> shallow diagnoses over terse correct ones. The lever is real; the merge
+> selection needs redesign (e.g. verify-pass judges between variants)
+> before retrying.
+
 **Files:** `lib/passes.sh`, `lib/common.sh` (merge helper), `lib/metrics.sh`,
 `action/action.yml` (input), `README.md`.
 **Depends on:** TASK-35/36 merged (gate uses the hard fixture).
@@ -1307,6 +1314,11 @@ byte-identical.
 
 ## TASK-38 — Verify pass: confirm the MECHANISM, not just the location (eval-gated)
 
+> **ATTEMPTED 2026-07-04 — GATE FAILED (neutral), REVERTED.** deep-recall
+> exactly unchanged (3/6), recall held. Prompt-level mechanism-rewriting
+> does not move deepseek — consistent with the Greptile "prompting doesn't
+> fix it" result, now measured at the diagnosis level.
+
 **Files:** `prompts/verify.txt` only.
 **Depends on:** TASK-35/36 merged.
 **Motivation:** right-line-wrong-mechanism is deepseek's signature failure
@@ -1327,6 +1339,13 @@ rewriting only applies to findings you are keeping."
 One wording iteration; on final failure revert and report both scorecards.
 
 ## TASK-39 — Adjacent-interaction scan instruction (eval-gated)
+
+> **ATTEMPTED 2026-07-04 — GATE FAILED, REVERTED.** adjacent still 0/3 and
+> main recall dropped 6/7→5/7 (attention dilution). BUT: the live review
+> of the identical diff (PR #22, full repo checkout) caught A03 + a bonus
+> race — the capability exists when context is RICH; the offline fixture
+> tree may be too minimal. Next design: deterministic gather-side feed
+> ("full bodies of functions the diff calls") instead of a prompt nudge.
 
 **Files:** `prompts/generate.txt` only.
 **Depends on:** TASK-35/36 merged.
