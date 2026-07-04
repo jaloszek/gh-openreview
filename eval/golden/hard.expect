@@ -1,0 +1,6 @@
+# hard: deep-diagnosis + adjacent/interaction fixture (dual-use with the
+# live "hard" playground PR). Repeated 3x by default since the whole point
+# is measuring right-line-wrong-mechanism and adjacent-scope recall, which
+# are noisy signals at k=1. No must-catch: recall_deep/recall_adjacent are
+# the numbers this fixture exists to produce, not a pass/fail gate.
+RUNS_DEFAULT=3

@@ -136,6 +136,27 @@ gitignored.
   dropped `runCatching` failure, an unsynchronized `MutableList` shared
   across coroutines, an off-by-one `until`/`..` swap). Answer key:
   `eval/golden/kotlin.tsv`; recall-only, no expect file, like `playground`.
+- **`hard/`** — an invented job-queue + billing-ledger service (`queued/`,
+  5 files) whose "feat: ad-hoc jobs, cancellation, lease tracking + ledger
+  cleanup" PR plants **10 bugs** aimed squarely at the two gaps `scope`/
+  `mechanism` scoring exists to measure: **4 deep-diagnosis** bugs where the
+  same line also admits a different, wrong, equally-plausible finding (a
+  wrong-denominator aggregation, a seconds-vs-milliseconds comparison, a
+  `<`/`<=` boundary flip dressed up as cleanup, a `subtotal`/`total`
+  near-twin mix-up that drops a discount); **3 adjacent/interaction** bugs
+  whose mechanism lives in code the diff never touches (a newly-possible
+  `None` hits an unchanged helper, a changed constant an unchanged check
+  still assumes, a new lease counter whose unchanged release path never
+  updates it); **2 omissions** (a dropped retry, a new status case missing
+  from an unchanged label map); **1 easy control** (an obvious null-deref).
+  Source at `eval/hard-src/{base,head}/`, answer key at `eval/hard-src/BUGS.md`
+  (id/file/line/scope/category/mechanism/description + grep evidence) and
+  `eval/golden/hard.tsv` (`eval/golden/hard.expect`: `RUNS_DEFAULT=3`).
+  **Dual-use:** `eval/hard-src/{base,head}` also seed a second, permanently
+  open live playground PR (see "Live playground PR" below) so the identical
+  diff can be reviewed offline (this fixture) and live (Fable) side by side.
+  Human review of the planted bugs is recommended before trusting this
+  fixture for scoring.
 
 ## Design rationale — the three review scenarios
 

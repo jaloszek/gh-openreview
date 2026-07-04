@@ -1,0 +1,5 @@
+- 1a2b3c4 feat: allow ad-hoc jobs without tags
+- 5d6e7f8 feat: cancel_job endpoint + duration widget helper
+- 9a0b1c2 feat: lease tracking for the upcoming stale-job reaper
+- c3d4e5f refactor: drop redundant retry/guard code now owned elsewhere
+- e6f7a8b feat: allow zero-cost ledger entries
