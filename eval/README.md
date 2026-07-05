@@ -316,7 +316,14 @@ editing the same sticky comment, either:
 - re-run the workflow manually with the `restart: true` input, or
 - comment `@openreview restart` on the PR (trusted authors only).
 
-Two operational facts learned live (2026-07-04):
+Three operational facts learned live (2026-07-04):
+
+- **Playground branches must NEVER contain the answer keys.** Branches cut
+  from main after the fixture merge carry `eval/` — and a reviewer that
+  greps the checkout can (and did, with disclosure) hit `BUGS.md`/golden
+  files mid-review. Strip them: on the base branch `git rm -r eval && git
+  commit`, merge into the head branch, push. Both playgrounds were
+  decontaminated this way on 2026-07-04.
 
 - **The playground runs the PR branch's engine**, not main's (`uses: ./action`
   after checking out the PR head). After engine changes on main, refresh it:

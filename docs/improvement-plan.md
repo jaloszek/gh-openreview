@@ -180,7 +180,48 @@ eval usage can throttle the free tier (hangs, 0-byte event streams) — use
 `OPENREVIEW_PASS_TIMEOUT=180` for eval runs and prefer a paid cheap tier
 for gate work.
 
-## Benchmark: Fable vs our deepseek pipeline (playground PR #19, 2026-07-04)
+## Benchmark v2: hard content, clean runs (live-hard PR #22, 2026-07-04/05)
+
+Answer key: `eval/hard-src/BUGS.md` (10 engineered bugs: 4 deep-diagnosis
+traps, 3 adjacent/interaction, 2 omission, 1 control). Both reviewers ran on
+**decontaminated** branches (answer keys removed from the PR branches after
+Fable's first run self-disclosed grepping into them — playground branches
+must NEVER carry `eval/`; both playgrounds fixed).
+
+| | Ours (deepseek-v4-flash, live) | Fable (claude-code-action, live) | Ours (offline fixture, k=3) |
+|---|---|---|---|
+| Seeded bugs | **9/10** (missed A02) | 8/10 (+A02-partial; missed O02) | 6/7 diff-scope, **0/3 adjacent** |
+| Deep diagnoses | **4/4** (incl. D01, the L03-class trap) | 4/4 | 3/6, D01 0/3 |
+| Adjacent class | 2/3 | 2/3 (different 3rd framing) | 0/3 |
+| Omissions | 2/2 (incl. RetryingStore-never-wired cross-file check) | 1/2 | 0-1/2 |
+| Out-of-key bonus findings | 1 (cancel_job doesn't cancel) | 2 (same + priority-0 falsy coercion) | 0 |
+| Cost/run | ~$0.01 | ~$1.5 | ~$0.003 |
+
+**Headline: on hard content with full live context, the deepseek pipeline
+reached parity with Fable** (a nose ahead on the answer key, a nose behind
+on novel-bonus discovery) at ~1/150 the cost. The offline fixture numbers
+were the *instrument's* fault, not the engine's — the minimal fixture tree
+starves the agentic file-reading that live runs enjoy.
+
+Insights bank (all measured 2026-07-04):
+1. **Context beats prompting** — three prompt-level interventions (mechanism
+   -rewrite, adjacent-scan) measured inert-to-harmful offline, while the
+   same engine WITH rich context caught the very classes those prompts
+   targeted. The next quality lever is deterministic context feeds, not
+   prompt nudges.
+2. **Voting (TASK-37)**: stabilized the hardest bug (D01 1/3→2/2) but the
+   longest-body merge heuristic traded away other correct diagnoses —
+   redesign the variant selection (e.g. verify-pass judges) before retrying.
+3. **Eval fidelity follow-up**: enrich offline fixture trees (full project,
+   not just touched files) so offline scores track live behavior; re-baseline
+   after.
+4. Both reviewers were primed by the PR body mentioning seeded bugs (equal
+   footing, but real-world PRs don't announce their bugs — absolute numbers
+   are optimistic; deltas are what count).
+5. Fable's self-disclosure of the answer-key leak mid-review is worth
+   noting as model integrity behavior.
+
+## Benchmark v1: Fable vs our deepseek pipeline (playground PR #19, 2026-07-04)
 
 First head-to-head on the seeded 8-bug diff (answer key `eval/live-src/BUGS.md`):
 
