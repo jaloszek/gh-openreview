@@ -1,3 +1,0 @@
-- 3f2a9c1 feat: billing summary module (totals, paging, per-kind cents)
-- 8b04d7e feat: storage tenant query + offline flush helpers
-- c91e5aa feat: bearer-token auth check + background summary shipper
