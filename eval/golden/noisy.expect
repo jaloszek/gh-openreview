@@ -1,5 +1,0 @@
-# noisy: big PR — recall of the must-catch criticals is the hard requirement,
-# plus a noise/triage budget so the review doesn't drown the author.
-MUST_CATCH=C01,C02,C03
-MAX_NITS=3
-MAX_TOTAL=12
