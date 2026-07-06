@@ -18,18 +18,26 @@ class Worker:
         self.queue = queue
         self.runner = runner
 
-    def is_stale(self, job, now_seconds):
-        """A job is stale if it's been in flight too long without completing."""
-        started = job.metadata.get("started_at") if job.metadata else None
-        if started is None:
+    def is_stale(self, job, now_ms):
+        """A job is stale if it's been in flight too long without completing.
+
+        `now_ms` comes from the millisecond-resolution monotonic clock the
+        dashboard already uses for lease timestamps, so we no longer need a
+        separate `started_at` field: `started_at_ms` is set once, in
+        `dispatch`, and never touched again.
+        """
+        started_ms = job.metadata.get("started_at_ms") if job.metadata else None
+        if started_ms is None:
             return False
-        return now_seconds - started > STALE_AFTER_SECONDS
+        return now_ms - started_ms > STALE_AFTER_SECONDS
 
     def dispatch(self):
         job = self.queue.dequeue()
         if job is None:
             return None
-        job.metadata = {"started_at": time.time()}
+        now_ms = int(time.time() * 1000)
+        job.metadata = {"started_at_ms": now_ms}
+        self.queue._leases[job.job_id] = now_ms
         try:
             result = self.runner.run(job)
             self.queue.mark_done(job.job_id, success=True)

@@ -2,12 +2,16 @@
 
 
 def average_job_cost_cents(jobs):
-    """Average cost, in cents, of jobs that actually completed."""
-    done = [j for j in jobs if j.status == "done"]
-    if not done:
+    """Average cost, in cents, across the jobs the worker pool has seen.
+
+    Previously this only averaged over jobs that reached `done`, which
+    under-counted cost on shifts with a lot of retries; now every job the
+    pool dequeued contributes, `done` or not.
+    """
+    if not jobs:
         return 0
-    total_cents = sum(j.metadata.get("cost_cents", 0) for j in done)
-    return total_cents // len(done)
+    total_cents = sum(j.metadata.get("cost_cents", 0) for j in jobs if j.metadata)
+    return total_cents // len(jobs)
 
 
 def status_counts(jobs):

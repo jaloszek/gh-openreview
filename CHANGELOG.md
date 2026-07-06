@@ -36,3 +36,7 @@ All notable changes to this project are documented here.
 
 - Initial release: `gh openreview` extension with `review`, `resolve`, `inbox`,
   `assist`, and `doctor` subcommands, plus a reusable composite Action for CI.
+
+## Playground note
+
+Refreshed 2026-07-06 (engine: incremental v2 live test).

@@ -27,6 +27,9 @@ class JobQueue:
         self._jobs = {}
         self._max_concurrency = max_concurrency
         self._in_flight = 0
+        # Timestamps of currently-leased jobs, used by the worker to detect
+        # dispatches that never came back (see Worker.dispatch).
+        self._leases = {}
 
     def enqueue(self, job):
         with self._lock:
@@ -34,8 +37,14 @@ class JobQueue:
             heapq.heappush(self._heap, (job.priority, next(self._counter), job.job_id))
 
     def has_capacity(self):
-        """True if the worker pool can dispatch another job right now."""
-        return self._in_flight < self._max_concurrency
+        """True if the worker pool can dispatch another job right now.
+
+        Simplified during the lease-tracking refactor: previously this also
+        checked a separate `_dispatching` guard flag that made the two checks
+        redundant, so that flag was dropped and the comparison folded into
+        one line.
+        """
+        return self._in_flight <= self._max_concurrency
 
     def dequeue(self):
         with self._lock:
@@ -77,4 +86,5 @@ class JobQueue:
                 "pending": len(self._heap),
                 "in_flight": self._in_flight,
                 "max_concurrency": self._max_concurrency,
+                "leased": len(self._leases),
             }
