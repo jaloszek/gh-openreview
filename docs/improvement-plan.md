@@ -170,7 +170,27 @@ Wave-4 execution notes (2026-07-06, same day):
   quota signature; ~70 min for a 3-round gate). Decision with pawel:
   remaining gate/re-baseline work (TASK-42/44) runs on the PAID flash tier
   (`opencode/deepseek-v4-flash`) — same model, faster, zero-retention;
-  the action's shipped free default is unchanged.
+  the action's shipped free default is unchanged. (In practice the paid
+  tier failed its smoke test twice today — "Unexpected server error" — so
+  the day's gates ran free after all; retry paid next session.)
+- **TASK-41 shipped + live-verified** (symbol-consumer feed): fired on
+  PR #22 (1 symbol, 1 consumer site) and the reviewer engaged with
+  `MIN_CHARGE_CENTS` for the first time (new inert-constant finding —
+  same wrong mechanism as Fable's). A02's full mechanism remains out of
+  reach for ANY name-based feed: `invoice_summary` never references the
+  constant textually (verified) — closing that class needs a
+  full-function-bodies feed or stays a frontier-model differentiator.
+  Operational gotcha rediscovered the hard way: playgrounds run the PR
+  branch's engine, so engine changes need the base+head branch refresh
+  (now also stripping `docs/` — spoilers).
+- **TASK-45 shipped + live-verified** (incremental v2, decided with pawel
+  after a clean engine-refresh delta WIPED nine valid findings from
+  PR #22's sticky comment): deterministic carry-forward for untouched
+  regions, model re-check for touched ones, resolved-section rendering,
+  dynamic ≥60%-delta full-review gate. Live: big delta → gate forced full
+  review (`418/200 lines`), findings intact; trivial delta → incremental
+  path, `11 carried, 0 resolved`, comment unchanged. The wipe cannot
+  reproduce.
 
 ### Re-baseline after full-project trees (2026-07-06, free flash tier)
 
