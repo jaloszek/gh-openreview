@@ -301,6 +301,24 @@ oc_run() {
 # "VARIANT 1: <body> || VARIANT 2: <body> ..." — prompts/verify.txt tells the
 # verify pass to re-derive the mechanism and keep only the correct variant.
 #
+# TASK-48: that join is wrong when >=2 of the variant clusters are each
+# independently corroborated (votes >= 2, i.e. seen by >=2 distinct passes) —
+# that is no longer "competing diagnoses of one bug", it is co-located
+# DISTINCT bugs (e.g. api.py:69 had an actor-never-recorded bug AND a missing
+# STATUS_LABELS entry, both real, both seen twice). So: every variant cluster
+# with votes >= 2 ("strong") is emitted as its OWN plain record (no VARIANT
+# markers, conf derived from its own votes) UNLESS it is the single strongest
+# strong cluster and there is at least one sub-2-vote ("weak") cluster left
+# over — that leftover still needs a home, so the strongest cluster absorbs
+# all weak clusters into one VARIANT record exactly like before. When there
+# is only one strong cluster (today's common case) or zero weak clusters to
+# absorb, this degrades to: one strong cluster and nothing to join -> that
+# cluster is also emitted plain; two-or-more strong clusters with no weak
+# leftovers -> all emitted plain (split). Groups that go through the split
+# path bump VOTE_SPLIT_GROUPS (stderr, parsed by the caller); groups that
+# still produce a VARIANT-joined record bump the multi-variant count that
+# passes.sh derives from the output text.
+#
 # @@PRDESC is carried verbatim from the FIRST input file (the earliest
 # surviving pass) — voting never touches the PR-description rating.
 vote_merge() {
@@ -393,6 +411,7 @@ vote_merge() {
 
         # --- cluster members into variant equivalence classes ---------------
         delete var_body; delete var_title; delete var_sev; delete var_conf
+        delete cluster_of
         nv = 0
         for (m = 1; m <= gcount[g]; m++) {
           b = gm_body[g SUBSEP m]; nb = norm(b)
@@ -405,54 +424,137 @@ vote_merge() {
               }
               if (gm_sev[g SUBSEP m] == "important") var_sev[vv] = "important"
               if (gm_conf[g SUBSEP m] == "high") var_conf[vv] = "high"
-              placed = 1; break
+              placed = 1; cluster_of[m] = vv; break
             }
           }
           if (!placed) {
             nv++
             var_body[nv] = b; var_title[nv] = gm_title[g SUBSEP m]
             var_sev[nv] = gm_sev[g SUBSEP m]; var_conf[nv] = gm_conf[g SUBSEP m]
+            cluster_of[m] = nv
           }
         }
 
         if (nv == 1) {
           osev = var_sev[1]; oconf = var_conf[1]
           if (gvotes[g] == pass_total) oconf = "high"
-          printf "@@FINDING\n"       
-          printf "sev: %s\n", osev   
+          printf "@@FINDING\n"
+          printf "sev: %s\n", osev
           printf "loc: %s:%s\n", gfile[g], gline[g]
-          printf "conf: %s\n", oconf 
+          printf "conf: %s\n", oconf
           printf "title: %s\n", var_title[1]
-          printf "body: %s\n", var_body[1]  
+          printf "body: %s\n", var_body[1]
         } else {
-          nmultivariant++
-          # order variants by body length ascending (shortest first)
-          for (a = 1; a <= nv; a++) order[a] = a
-          for (a = 1; a <= nv; a++)
-            for (b2 = a + 1; b2 <= nv; b2++)
-              if (length(var_body[order[b2]]) < length(var_body[order[a]])) {
-                t = order[a]; order[a] = order[b2]; order[b2] = t
-              }
-          cap = (nv > 3) ? 3 : nv
-          merged_body = ""; osev = "nit"; oconf = "low"
-          for (a = 1; a <= cap; a++) {
-            vi = order[a]
-            merged_body = merged_body (a > 1 ? " || " : "") "VARIANT " a ": " var_body[vi]
-            if (var_sev[vi] == "important") osev = "important"
-            if (var_conf[vi] == "high") oconf = "high"
-            else if (var_conf[vi] == "med" && oconf != "high") oconf = "med"
+          # --- per-variant votes = distinct passes contributing to it -------
+          delete seenvpass
+          for (vv = 1; vv <= nv; vv++) var_votes[vv] = 0
+          for (m = 1; m <= gcount[g]; m++) {
+            vv = cluster_of[m]
+            vpkey = vv SUBSEP gm_pass[g SUBSEP m]
+            if (!(vpkey in seenvpass)) { seenvpass[vpkey] = 1; var_votes[vv]++ }
           }
-          printf "@@FINDING\n"       
-          printf "sev: %s\n", osev   
-          printf "loc: %s:%s\n", gfile[g], gline[g]
-          printf "conf: %s\n", oconf 
-          printf "title: %s\n", var_title[order[1]]
-          printf "body: %s\n", merged_body
-          delete order
+
+          nstrong = 0
+          for (vv = 1; vv <= nv; vv++) if (var_votes[vv] >= 2) strong[++nstrong] = vv
+
+          if (nstrong >= 2) {
+            # >=2 independently-corroborated clusters: distinct bugs, not
+            # competing diagnoses of one bug (TASK-48).
+            nsplit++
+            primary = strong[1]
+            for (a = 2; a <= nstrong; a++)
+              if (var_votes[strong[a]] > var_votes[primary]) primary = strong[a]
+
+            nweak = 0
+            for (vv = 1; vv <= nv; vv++) if (var_votes[vv] < 2) weak[++nweak] = vv
+
+            # every strong cluster except primary stands alone
+            for (a = 1; a <= nstrong; a++) {
+              vv = strong[a]
+              if (vv == primary) continue
+              osev = var_sev[vv]; oconf = var_conf[vv]
+              if (var_votes[vv] == pass_total) oconf = "high"
+              printf "@@FINDING\n"
+              printf "sev: %s\n", osev
+              printf "loc: %s:%s\n", gfile[g], gline[g]
+              printf "conf: %s\n", oconf
+              printf "title: %s\n", var_title[vv]
+              printf "body: %s\n", var_body[vv]
+            }
+
+            if (nweak == 0) {
+              # nothing left to absorb: primary stands alone too
+              osev = var_sev[primary]; oconf = var_conf[primary]
+              if (var_votes[primary] == pass_total) oconf = "high"
+              printf "@@FINDING\n"
+              printf "sev: %s\n", osev
+              printf "loc: %s:%s\n", gfile[g], gline[g]
+              printf "conf: %s\n", oconf
+              printf "title: %s\n", var_title[primary]
+              printf "body: %s\n", var_body[primary]
+            } else {
+              # weak leftovers still join the strongest clusters VARIANT
+              # record, exactly like the old join behavior.
+              nmultivariant++
+              njoin = 0
+              joinv[++njoin] = primary
+              for (a = 1; a <= nweak; a++) joinv[++njoin] = weak[a]
+              for (a = 1; a <= njoin; a++) order[a] = joinv[a]
+              for (a = 1; a <= njoin; a++)
+                for (b2 = a + 1; b2 <= njoin; b2++)
+                  if (length(var_body[order[b2]]) < length(var_body[order[a]])) {
+                    t = order[a]; order[a] = order[b2]; order[b2] = t
+                  }
+              cap = (njoin > 3) ? 3 : njoin
+              merged_body = ""; osev = "nit"; oconf = "low"
+              for (a = 1; a <= cap; a++) {
+                vi = order[a]
+                merged_body = merged_body (a > 1 ? " || " : "") "VARIANT " a ": " var_body[vi]
+                if (var_sev[vi] == "important") osev = "important"
+                if (var_conf[vi] == "high") oconf = "high"
+                else if (var_conf[vi] == "med" && oconf != "high") oconf = "med"
+              }
+              printf "@@FINDING\n"
+              printf "sev: %s\n", osev
+              printf "loc: %s:%s\n", gfile[g], gline[g]
+              printf "conf: %s\n", oconf
+              printf "title: %s\n", var_title[order[1]]
+              printf "body: %s\n", merged_body
+              delete order; delete joinv
+            }
+          } else {
+            # fewer than 2 independently-corroborated clusters: old behavior,
+            # join everything into one VARIANT record.
+            nmultivariant++
+            # order variants by body length ascending (shortest first)
+            for (a = 1; a <= nv; a++) order[a] = a
+            for (a = 1; a <= nv; a++)
+              for (b2 = a + 1; b2 <= nv; b2++)
+                if (length(var_body[order[b2]]) < length(var_body[order[a]])) {
+                  t = order[a]; order[a] = order[b2]; order[b2] = t
+                }
+            cap = (nv > 3) ? 3 : nv
+            merged_body = ""; osev = "nit"; oconf = "low"
+            for (a = 1; a <= cap; a++) {
+              vi = order[a]
+              merged_body = merged_body (a > 1 ? " || " : "") "VARIANT " a ": " var_body[vi]
+              if (var_sev[vi] == "important") osev = "important"
+              if (var_conf[vi] == "high") oconf = "high"
+              else if (var_conf[vi] == "med" && oconf != "high") oconf = "med"
+            }
+            printf "@@FINDING\n"
+            printf "sev: %s\n", osev
+            printf "loc: %s:%s\n", gfile[g], gline[g]
+            printf "conf: %s\n", oconf
+            printf "title: %s\n", var_title[order[1]]
+            printf "body: %s\n", merged_body
+            delete order
+          }
         }
       }
       printf "@@PRDESC\n"
       printf "%s", prdesc
+      printf "VOTE_SPLIT_GROUPS=%d\n", nsplit + 0 > "/dev/stderr"
     }
   ' "$@" > "$out"
 }

@@ -203,6 +203,7 @@ echo "PASS1_SECS=$((SECONDS - _t0))" >> "$METRICS"
 
 VOTE_GROUPS_KEPT=0
 VOTE_MULTIVARIANT_GROUPS=0
+VOTE_SPLIT_GROUPS=0
 if [ -z "$SURVIVORS" ]; then
   GENERATE_FAILED=1
   warn "pass 1 (generate) failed: all $VOTE_PASSES run(s) failed"
@@ -212,15 +213,21 @@ else
   if [ "$#" -eq 1 ]; then
     [ "$1" = "$SCRATCH/review-candidates.md" ] || cp "$1" "$SCRATCH/review-candidates.md"
   else
-    vote_merge "$SCRATCH/review-candidates.md" "$@"
+    # vote_merge (TASK-48) reports its split-group count on stderr as
+    # VOTE_SPLIT_GROUPS=<n>; capture it while the real output still lands in
+    # review-candidates.md (vote_merge redirects its own stdout internally).
+    VOTE_MERGE_STDERR=$(vote_merge "$SCRATCH/review-candidates.md" "$@" 2>&1 1>/dev/null)
     VOTE_GROUPS_KEPT=$(grep -c '^@@FINDING[[:space:]]*$' "$SCRATCH/review-candidates.md" 2>/dev/null || true)
     VOTE_MULTIVARIANT_GROUPS=$(grep -c 'VARIANT 2:' "$SCRATCH/review-candidates.md" 2>/dev/null || true)
+    VOTE_SPLIT_GROUPS=$(printf '%s\n' "$VOTE_MERGE_STDERR" | grep -oE 'VOTE_SPLIT_GROUPS=[0-9]+' | cut -d= -f2)
+    case "$VOTE_SPLIT_GROUPS" in ''|*[!0-9]*) VOTE_SPLIT_GROUPS=0 ;; esac
   fi
 fi
 {
   echo "VOTE_PASSES=$VOTE_PASSES"
   echo "VOTE_GROUPS_KEPT=${VOTE_GROUPS_KEPT:-0}"
   echo "VOTE_MULTIVARIANT_GROUPS=${VOTE_MULTIVARIANT_GROUPS:-0}"
+  echo "VOTE_SPLIT_GROUPS=${VOTE_SPLIT_GROUPS:-0}"
 } >> "$METRICS"
 
 # --- GATE: any candidate findings? -------------------------------------------
