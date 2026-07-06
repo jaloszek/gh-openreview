@@ -338,7 +338,11 @@ Three operational facts learned live (2026-07-04):
   greps the checkout can (and did, with disclosure) hit `BUGS.md`/golden
   files mid-review. Strip them: on the base branch `git rm -r eval && git
   commit`, merge into the head branch, push. Both playgrounds were
-  decontaminated this way on 2026-07-04.
+  decontaminated this way on 2026-07-04. **Extended 2026-07-06: strip
+  `docs/` as well** — the improvement plan and task specs now describe the
+  seeded bugs and their mechanisms (benchmark sections, wave-4 specs), so
+  they are answer-key material too. The refresh recipe below therefore ends
+  with `git rm -rf eval docs` before committing the merge.
 
 - **The playground runs the PR branch's engine**, not main's (`uses: ./action`
   after checking out the PR head). After engine changes on main, refresh it:
