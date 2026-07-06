@@ -119,8 +119,12 @@ reviewer defers to humans and never repeats or re-raises a point. When other
 can flag concurrent/conflicting work. When a changed file has a recent
 (120-day) commit history matching `fix|bug|regress`, it also surfaces those
 commits as a **regression radar** so the reviewer checks the PR doesn't undo
-or bypass them (skipped silently on a shallow checkout). **The LLM passes
-read only those files — they never receive a GitHub token.**
+or bypass them (skipped silently on a shallow checkout). It also greps the
+checkout for **unchanged consumers of changed symbols** (a constant/def/
+class/shell function this PR added, removed, or modified), so the reviewer
+can catch a consumer still assuming the old value, format, or contract.
+**The LLM passes read only those files — they never receive a GitHub
+token.**
 
 ### Incremental review
 
