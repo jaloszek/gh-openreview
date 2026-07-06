@@ -206,6 +206,19 @@ Wave-4 execution notes (2026-07-06, same day):
   Practical rule: budget ONE full eval gate per day on the free tier, or
   fix paid-tier access before the next gate-heavy session.
 
+Wave 5 (same evening, all four shipped — deterministic, no LLM gates):
+- **TASK-46** — compare.sh mechanism-aware scoring; orchestrator
+  tightened the spec's adjacent rule after it falsely credited A02
+  (mechanism now required; live PR #22 scores adjacent 2/3 truthfully).
+- **TASK-47** — carried findings re-anchor across incremental hunk
+  offsets; TASK-45's known limitation closed.
+- **TASK-48** — voting v2 co-located-bug split, on `wip/task-44-voting`
+  (still gated with the rest of TASK-44).
+- **TASK-49** — `eval/refresh-playground.sh` automates the
+  merge-strip-push engine refresh. Incidental find worth knowing: Bash
+  3.2 + `set -u` folds a multibyte char following `$var` into the
+  variable name — brace-wrap before Unicode in log strings.
+
 ### Re-baseline after full-project trees (2026-07-06, free flash tier)
 
 TASK-42 done: every fixture's `tree/` is now the complete post-PR project
