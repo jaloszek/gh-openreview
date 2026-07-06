@@ -93,9 +93,28 @@ jobs:
 
             Posting: if you have a tracking comment (PR-event runs), put the full
             review there. Otherwise (manual dispatch), post the review on the PR
-            as a single comment whose body MUST start with this exact line so
-            older runs can be cleaned up:
+            as a single comment whose body MUST start with this exact line:
             ## 🔍 Code Review
+
+            In BOTH posting modes, end the review body with these two elements,
+            in this order:
+
+            1. A collapsed machine-readable findings block (enables automated
+               comparison against the OpenCode reviewer — keep the schema exact):
+
+               <details><summary>🔍 Machine-readable findings (for agents)</summary>
+
+               ```tsv
+               sev	conf	path	line	title	body
+               ```
+
+               One tab-separated row per finding. Map severities: 🔴/🟠 →
+               `important`, 🟡/🔵 → `nit`; omit ⚪/✅ rows. `conf` is your own
+               confidence (`high|med|low`). `body` must be a single line.
+               Close the block with </details>.
+
+            2. The literal final line (cleanup marker for older runs):
+               <!-- claude-review -->
 
           claude_args: |
             --max-turns 60
@@ -111,11 +130,14 @@ jobs:
           KEEP_LAST=1
 
           # Both Claude review and this step use GITHUB_TOKEN (github-actions[bot]),
-          # so deleting own comments does not generate notifications. Matches both
-          # posting modes: tracking comments ("Claude finished") and manual-dispatch
-          # comments ("🔍 Code Review").
+          # so deleting own comments does not generate notifications. Match on the
+          # hidden <!-- claude-review --> marker (required in the prompt), plus
+          # legacy patterns for comments posted before the marker existed. The
+          # OpenCode reviewer also posts as github-actions[bot] but starts with
+          # "## 🤖 OpenCode Review" and carries an openreview:state marker — the
+          # startswith/contains tests below can never match it; keep it that way.
           ALL_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude finished|🔍 Code Review")) | .id')
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select((.body | contains("<!-- claude-review -->")) or (.body | contains("Claude finished")) or (.body | startswith("## 🔍 Code Review"))) | .id')
           COMMENT_IDS=$(printf '%s\n' "$ALL_IDS" | sed '/^$/d' | awk -v k="$KEEP_LAST" '{a[NR]=$0} END{for(i=1;i<=NR-k;i++) print a[i]}')
 
           if [ -z "$COMMENT_IDS" ]; then

@@ -498,6 +498,126 @@ if [ -s "$SCRATCH/co-change.md" ]; then
   info "co-change: $(($(wc -l < "$SCRATCH/co-change.md" | tr -d ' ') - 1)) coupled file(s) not touched"
 fi
 
+# Changed-symbol consumer feed (TASK-41): definitions this PR added/removed/
+# modified (constants, Python def/class, shell functions), and any UNCHANGED
+# site elsewhere in the tree that still reads them — an adjacent-bug shape
+# (stale assumption about a changed constant/contract) a diff-only reviewer
+# routinely misses. Best-effort; absent-silent (no file written) on no
+# symbols, no consumers, or a git-grep failure.
+#
+# Exclusion is line-level, not whole-file: a grep hit is dropped only when it
+# lands on a line this diff itself added (the definition's own new line, or
+# any other added line reusing the symbol) — not the whole file it lives in.
+# A blanket whole-file exclusion would zero out most real consumers: the
+# common case is a PR that touches several files, and a sibling function left
+# untouched in one of those SAME files (e.g. invoice_summary next to a
+# changed MIN_CHARGE_CENTS in the same ledger.py) is exactly the adjacency
+# this feed exists to surface.
+rm -f "$SCRATCH/symbol-consumers.md"
+SYM_CHANGED_LINES="$SCRATCH/.symcons-changed-lines.tsv"
+awk '
+  /^diff --git / { path=$0; sub(/^diff --git a\/.* b\//, "", path); next }
+  /^(---|\+\+\+)/ { next }
+  /^@@/ { match($0, /\+[0-9]+/); newno = substr($0, RSTART+1, RLENGTH-1) + 0; next }
+  /^\+/ { if (path != "") print path "\t" newno; newno++; next }
+  /^-/  { next }
+  /^ /  { newno++; next }
+' "$SCRATCH/pr.diff" > "$SYM_CHANGED_LINES"
+
+SYM_RANKED="$SCRATCH/.symcons-ranked.tsv"
+awk '
+  /^(\+\+\+|---) / { next }
+  /^[+-][[:space:]]*[A-Z_][A-Z0-9_]* *=/ {
+    line = $0; sub(/^[+-][[:space:]]*/, "", line)
+    sym = line; sub(/[[:space:]]*=.*/, "", sym)
+    if (sym ~ /^[A-Z_][A-Z0-9_]*$/) print sym
+    next
+  }
+  /^[+-][[:space:]]*(def|class) [A-Za-z_]/ {
+    line = $0; sub(/^[+-][[:space:]]*(def|class)[[:space:]]+/, "", line)
+    sym = line; sub(/[^A-Za-z0-9_].*/, "", sym)
+    if (sym != "") print sym
+    next
+  }
+  /^[+-][a-z_]+\(\)/ {
+    line = $0; sub(/^[+-]/, "", line)
+    sym = line; sub(/\(\).*/, "", sym)
+    if (sym != "") print sym
+    next
+  }
+' "$SCRATCH/pr.diff" | sort | uniq -c | sort -k1,1rn -k2,2 \
+  | awk '{ printf "%s\t%s\n", $1, $2 }' > "$SYM_RANKED"
+
+NSYMS=$(wc -l < "$SYM_RANKED" | tr -d ' ')
+if [ "$NSYMS" -gt 12 ]; then
+  DROPPED=$(tail -n +13 "$SYM_RANKED" | awk -F'\t' '{print $2}' | paste -sd, -)
+  info "symbol-consumers: extracted $NSYMS changed symbol(s), capped at 12 — dropped: $DROPPED"
+  head -12 "$SYM_RANKED" > "$SYM_RANKED.tmp" && mv "$SYM_RANKED.tmp" "$SYM_RANKED"
+fi
+
+if [ -s "$SYM_RANKED" ]; then
+  SYM_BODY="$SCRATCH/.symcons-body.md"
+  SYM_SITES="$SCRATCH/.symcons-sites.tsv"
+  : > "$SYM_BODY"
+  while IFS="$(printf '\t')" read -r _cnt sym; do
+    [ -n "$sym" ] || continue
+    SITES=$(git -C "$OR_DIR" grep -n -w "$sym" -- ':!*.md' 2>/dev/null | head -200 || true)
+    [ -n "$SITES" ] || continue
+    : > "$SYM_SITES"
+    # Exclude hits on lines this diff added (covers the symbol's own
+    # defining line plus any other added line reusing the same name).
+    printf '%s\n' "$SITES" | while IFS=: read -r path line _rest; do
+      [ -n "$path" ] || continue
+      grep -qxF "$(printf '%s\t%s' "$path" "$line")" "$SYM_CHANGED_LINES" 2>/dev/null && continue
+      printf '%s\t%s\n' "$path" "$line" >> "$SYM_SITES"
+    done
+    [ -s "$SYM_SITES" ] || continue
+    {
+      printf '### %s — consumers not touched by this PR\n' "$sym"
+      head -5 "$SYM_SITES" | while IFS="$(printf '\t')" read -r path line; do
+        [ -f "$OR_DIR/$path" ] || continue
+        printf '\n**%s:%s**\n```\n' "$path" "$line"
+        awk -v target="$line" '
+          NR <= target && $0 ~ /^[[:space:]]*(def|class)[[:space:]]/ { last_def = NR }
+          NR <= target && $0 ~ /^[a-zA-Z_][A-Za-z0-9_]*\(\)/ { last_def = NR }
+          { lines[NR] = $0 }
+          END {
+            end = target + 5
+            if (end > NR) end = NR
+            start = (last_def > 0) ? last_def : target
+            if (end - start + 1 > 15) start = end - 15 + 1
+            if (start < 1) start = 1
+            for (i = start; i <= end; i++) print i": " lines[i]
+          }
+        ' "$OR_DIR/$path" 2>/dev/null || true
+        printf '```\n'
+      done
+    } >> "$SYM_BODY"
+  done < "$SYM_RANKED"
+  rm -f "$SYM_SITES"
+
+  if [ -s "$SYM_BODY" ]; then
+    cp "$SYM_BODY" "$SCRATCH/symbol-consumers.md"
+    BODY_LINES=$(wc -l < "$SCRATCH/symbol-consumers.md" | tr -d ' ')
+    if [ "$BODY_LINES" -gt 400 ]; then
+      head -400 "$SCRATCH/symbol-consumers.md" > "$SCRATCH/.symcons-trunc.md"
+      mv "$SCRATCH/.symcons-trunc.md" "$SCRATCH/symbol-consumers.md"
+      info "symbol-consumers: truncated from $BODY_LINES to 400 lines"
+    fi
+    sanitize_text "$SCRATCH/symbol-consumers.md"
+  fi
+  rm -f "$SYM_BODY"
+fi
+rm -f "$SYM_CHANGED_LINES" "$SYM_RANKED"
+
+if [ -s "$SCRATCH/symbol-consumers.md" ]; then
+  nsym=$(grep -c '^### ' "$SCRATCH/symbol-consumers.md")
+  nsite=$(grep -c '^\*\*' "$SCRATCH/symbol-consumers.md")
+  info "symbol-consumers: $nsym changed symbol(s) with $nsite untouched consumer site(s)"
+else
+  info "symbol-consumers: no untouched consumer sites found (or no definitions changed)"
+fi
+
 DIFF_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
 echo "DIFF_LINES=$DIFF_LINES" >> "$SCRATCH/metrics.env"
 info "context: $DIFF_LINES diff lines, $(wc -l < "$SCRATCH/prev-review.md" | tr -d ' ') prev-review lines"
