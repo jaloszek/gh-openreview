@@ -83,6 +83,15 @@ if [ -f "$SCRATCH/incremental-note.md" ] && [ -s "$SCRATCH/pr-incremental.diff" 
 - $S/pr-incremental.diff — the incremental diff (changes since the previous review); focus your review here."
 fi
 
+# Incremental v2 (TASK-45): previous findings whose code changed since the
+# last review (gather.sh's touched split) — ask the model to re-verify each
+# rather than silently dropping them. Untouched previous findings are NOT
+# sent here; render.sh carries those forward verbatim without a re-check.
+PREV_TOUCHED_CONTEXT=""
+if [ -s "$SCRATCH/prev-findings-touched.tsv" ]; then
+  PREV_TOUCHED_CONTEXT="- $S/prev-findings-touched.tsv — findings from your previous review that are in code that changed since then (schema: sev conf path line anchored title body). Re-verify each against the CURRENT code: still present -> re-emit it as a normal finding (with its current file:line); fixed -> do not emit it. Do not re-emit findings you cannot re-confirm."
+fi
+
 # Open-PR cross-context (TASK-30): other open PRs touching the same files,
 # when gather.sh found any overlap.
 OPEN_PRS_CONTEXT=""
@@ -126,6 +135,7 @@ Read the context with your read tool:
 - $S/pr-meta.json — the PR title, body, and changed files.
 $INTENT_CONTEXT
 $INCREMENTAL_CONTEXT
+$PREV_TOUCHED_CONTEXT
 $OPEN_PRS_CONTEXT
 $REGRESSION_CONTEXT
 $CO_CHANGE_CONTEXT

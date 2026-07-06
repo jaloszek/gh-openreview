@@ -142,6 +142,28 @@ line. On the next run:
 - A force-push or rebase that makes the previous commit unreachable falls back
   silently to a full review.
 
+**Carry-forward + resolved tracking:** incremental mode only narrows the
+*model's attention* — it must never narrow the *posted comment*. When the
+incremental diff is under `OPENREVIEW_INCR_MAX_PCT` (default 60%) of the full
+diff AND a previous run's findings are available, the previous review's
+findings that sit outside the incremental diff (± 10 lines) are carried
+forward into the new comment verbatim, unverified again (they were already
+verified in an earlier run). Findings whose code DID change get handed back
+to the model to re-check: still present → re-emitted as a normal finding;
+fixed → dropped and shown in a collapsed "✅ Resolved since last review"
+section instead. A fresh finding near a carried one's location always wins
+(the carried copy is dropped as a duplicate). Below the threshold, or with no
+previous findings to carry, the run is a plain full review — identical to
+today's behavior, no carry-forward, no resolved section.
+
+Known limitation: carried findings keep their original `file:line` from when
+they were first reported. A commit that shifts line numbers in an untouched
+region of the file (e.g. adding a function above it) can leave a carried
+finding's location slightly stale; the existing anchor-validation step
+already flags this as `[unanchored]`/"location approximate" rather than
+dropping it silently, but there is no line-shift tracking — this is a known,
+accepted gap, not a bug.
+
 ### Restart / skip guard
 
 The skip guard only fires when **both** the diff (patch-id) and the engine

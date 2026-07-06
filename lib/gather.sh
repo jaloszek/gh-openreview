@@ -41,6 +41,12 @@ DIFF_MAX_LINES="${OPENREVIEW_DIFF_MAX_LINES:-4000}"
 # Guard against a non-numeric input crashing the `-gt` test under set -e.
 case "$DIFF_MAX_LINES" in ""|*[!0-9]*) DIFF_MAX_LINES=4000 ;; esac
 
+# Incremental v2 (TASK-45) dynamic scope gate: incremental mode is only used
+# when the incremental diff is under this percent of the full diff (integer
+# percent). Guard against a non-numeric input the same way as DIFF_MAX_LINES.
+INCR_MAX_PCT="${OPENREVIEW_INCR_MAX_PCT:-60}"
+case "$INCR_MAX_PCT" in ""|*[!0-9]*) INCR_MAX_PCT=60 ;; esac
+
 gh pr view "$OR_PR" --repo "$OR_REPO" --json title,body,files,baseRefOid,headRefOid > "$SCRATCH/pr-meta.json"
 
 # --- Incremental review (item G): patch-id + previous-state read -------------
@@ -54,6 +60,26 @@ PREV_COMMENT_RAW="$SCRATCH/.prev-comment-raw.md"
 gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
   --jq '[.[] | select(.body | contains(env.MARKER_MATCH))] | (.[-1].body // "")' \
   > "$PREV_COMMENT_RAW" 2>/dev/null || true
+
+# Incremental v2 (TASK-45): extract the previous review's machine-readable
+# findings TSV (the agent details block render.sh emits, schema: sev conf
+# path line anchored title body) so they can be carried forward. Tolerant:
+# CRLF-normalize first, pull only the content between the ```tsv fences, skip
+# the header row, skip any row with fewer than 7 tab-separated fields. Absent
+# or unparseable -> no file, i.e. today's behavior (no carry-forward). Restart
+# must not carry anything forward, same as it ignores all other prior state.
+rm -f "$SCRATCH/prev-findings.tsv"
+if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
+  tr -d '\r' < "$PREV_COMMENT_RAW" \
+    | awk '
+        /^```tsv[[:space:]]*$/ { infence=1; next }
+        /^```[[:space:]]*$/    { infence=0; next }
+        infence                { print }
+      ' \
+    | awk -F'\t' 'NR==1 { next } NF>=7 { print }' \
+    > "$SCRATCH/prev-findings.tsv"
+  [ -s "$SCRATCH/prev-findings.tsv" ] || rm -f "$SCRATCH/prev-findings.tsv"
+fi
 
 # Parse the hidden state block: `<!-- openreview:state <base64> -->` encoding
 # `{"v":1,"last_sha":"...","patch_id":"...","fp":"..."}`. Tolerate
@@ -129,10 +155,25 @@ if [ -n "$LAST_SHA" ] && [ "$LAST_SHA" != "$HEAD_SHA" ] \
     cp "$SCRATCH/.pr-incremental.raw" "$SCRATCH/pr-incremental.diff" 2>/dev/null || : > "$SCRATCH/pr-incremental.diff"
   fi
   rm -f "$SCRATCH/.pr-incremental.raw"
-  printf 'This PR was previously reviewed at %s. pr-incremental.diff contains only the changes since then — focus your review there; the full diff is still in pr-numbered.diff for context.\n' "$LAST_SHA" > "$SCRATCH/incremental-note.md"
+  printf 'This PR was previously reviewed at %s. pr-incremental.diff contains only the changes since then — treat the delta as your review FOCUS, but cross-file effects of the full diff (pr-numbered.diff) remain in scope.\n' "$LAST_SHA" > "$SCRATCH/incremental-note.md"
+
+  # incr-lines.tsv (TASK-45): path<TAB>line for every new-side changed line in
+  # the incremental diff — reuse the changed-lines awk pattern from the
+  # TASK-41 symbol-consumers feed (added lines only; context/deletion lines
+  # carry no new-side "changed" line). Used below to split previous findings
+  # into touched/untouched.
+  awk '
+    /^diff --git / { path=$0; sub(/^diff --git a\/.* b\//, "", path); next }
+    /^(---|\+\+\+)/ { next }
+    /^@@/ { match($0, /\+[0-9]+/); newno = substr($0, RSTART+1, RLENGTH-1) + 0; next }
+    /^\+/ { if (path != "") print path "\t" newno; newno++; next }
+    /^-/  { next }
+    /^ /  { newno++; next }
+  ' "$SCRATCH/pr-incremental.diff" > "$SCRATCH/incr-lines.tsv"
+
   info "incremental review: diffing since $LAST_SHA"
 else
-  rm -f "$SCRATCH/pr-incremental.diff" "$SCRATCH/incremental-note.md"
+  rm -f "$SCRATCH/pr-incremental.diff" "$SCRATCH/incremental-note.md" "$SCRATCH/incr-lines.tsv"
 fi
 
 # Full diff, then drop excluded files (whole `diff --git` blocks). Report what
@@ -270,6 +311,64 @@ if [ "$DIFF_MAX_LINES" -gt 0 ]; then
     warn "diff compressed: $ninc file(s) included, $ndeleted deleted-only, $nomitted omitted over budget"
     echo "::notice::openreview compressed the diff: $ninc file(s) included, $ndeleted deleted-only, $nomitted omitted over budget"
   fi
+fi
+
+# --- Incremental v2 (TASK-45): dynamic scope gate -----------------------------
+# Incremental mode (carry-forward + focused re-check) only applies when BOTH:
+# the incremental diff is a small fraction of the full diff, AND we have a
+# previous findings TSV to carry forward / re-check. Otherwise this run is a
+# full review — exactly today's path: no incremental files, no carry-forward.
+# Sizes are compared on the final pr.diff / pr-incremental.diff files (after
+# exclude + compression), since those are the only two diffs that exist on
+# disk; integer arithmetic only (incr*100 < pct*full) to avoid a bc/float dep.
+INCR_LINES=0
+[ -s "$SCRATCH/pr-incremental.diff" ] && INCR_LINES=$(wc -l < "$SCRATCH/pr-incremental.diff" | tr -d ' ')
+FULL_LINES=$(wc -l < "$SCRATCH/pr.diff" | tr -d ' ')
+
+INCREMENTAL_MODE=0
+if [ "$INCR_LINES" -gt 0 ] && [ -s "$SCRATCH/prev-findings.tsv" ] \
+  && [ $((INCR_LINES * 100)) -lt $((INCR_MAX_PCT * FULL_LINES)) ]; then
+  INCREMENTAL_MODE=1
+fi
+
+if [ "$INCREMENTAL_MODE" -eq 1 ]; then
+  info "incremental mode: incremental diff is $INCR_LINES/$FULL_LINES lines (< ${INCR_MAX_PCT}%) and previous findings exist — carry-forward enabled"
+
+  # Split previous findings into touched/untouched (item 4): a previous
+  # finding is TOUCHED if any incr-lines row matches the same path with a
+  # line within +-10; render.sh carries the rest (untouched) forward
+  # verbatim and treats touched-but-not-re-emitted as resolved. Built with a
+  # BEGIN{getline} lookup, not the two-file NR==FNR idiom: NR==FNR breaks
+  # when the first file (incr-lines.tsv, e.g. an incremental diff that's
+  # deletion-only) is empty — NR/FNR both restart at 1 on the second file's
+  # first record too, silently swallowing it as bogus "file 1" data.
+  awk -F'\t' -v OFS='\t' -v win=10 -v lf="$SCRATCH/incr-lines.tsv" '
+    BEGIN {
+      while ((getline line < lf) > 0) {
+        n = split(line, a, "\t")
+        if (n >= 2) lines[a[1]] = lines[a[1]] " " (a[2]+0)
+      }
+      close(lf)
+    }
+    {
+      path=$3; line=$4+0; matched=0
+      n=split(lines[path], arr, " ")
+      for (i=1;i<=n;i++) { if (arr[i]!="") { d=arr[i]-line; if (d<0) d=-d; if (d<=win) { matched=1; break } } }
+      if (matched) print
+    }
+  ' "$SCRATCH/prev-findings.tsv" > "$SCRATCH/prev-findings-touched.tsv"
+  ntouched=$(wc -l < "$SCRATCH/prev-findings-touched.tsv" | tr -d ' ')
+  info "incremental mode: $ntouched of $(wc -l < "$SCRATCH/prev-findings.tsv" | tr -d ' ') previous finding(s) touched by the incremental diff"
+else
+  if [ "$INCR_LINES" -gt 0 ]; then
+    if [ ! -s "$SCRATCH/prev-findings.tsv" ]; then
+      info "full review: no previous findings to carry forward"
+    else
+      info "full review: incremental diff is $INCR_LINES/$FULL_LINES lines (>= ${INCR_MAX_PCT}%) — too large to trust as focused delta"
+    fi
+  fi
+  rm -f "$SCRATCH/pr-incremental.diff" "$SCRATCH/incremental-note.md" "$SCRATCH/incr-lines.tsv" \
+        "$SCRATCH/prev-findings.tsv" "$SCRATCH/prev-findings-touched.tsv"
 fi
 
 # pr-numbered.diff: same diff --git / @@ structure as pr.diff, but every
