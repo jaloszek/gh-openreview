@@ -207,7 +207,54 @@ if [ -s "$PREV_TSV" ]; then
     # so carried findings flow through the SAME confidence gate, anchor
     # validation, and sort as fresh ones. NR is offset well past any fresh
     # NR so same-rank ties break fresh-first (arbitrary but stable).
-    awk -F'\t' -v OFS='\t' '
+    #
+    # TASK-47: before converting, re-anchor each carried finding's line
+    # number across hunk offsets from pr-incremental.diff. A carried
+    # finding's line L (as of last_sha, the diff's OLD side) shifts by the
+    # cumulative (new_len - old_len) of every hunk whose OLD range ends
+    # before L. A finding whose line falls INSIDE a hunk's old range would
+    # mean it should have been TOUCHED (never carried) — treat that as a
+    # data inconsistency: warn and keep the original line rather than guess.
+    awk -F'\t' -v OFS='\t' -v diff="$SCRATCH/pr-incremental.diff" '
+      BEGIN {
+        path = ""
+        while ((getline dline < diff) > 0) {
+          if (dline ~ /^diff --git /) {
+            path = dline
+            sub(/^diff --git a\/.* b\//, "", path)
+            continue
+          }
+          if (dline ~ /^@@/) {
+            if (path == "") continue
+            if (!match(dline, /-[0-9]+(,[0-9]+)?/)) continue
+            oldpart = substr(dline, RSTART + 1, RLENGTH - 1)
+            if (!match(dline, /\+[0-9]+(,[0-9]+)?/)) continue
+            newpart = substr(dline, RSTART + 1, RLENGTH - 1)
+            n1 = split(oldpart, oa, ",")
+            old_start = oa[1] + 0
+            old_len = (n1 >= 2 ? oa[2] + 0 : 1)
+            n2 = split(newpart, na, ",")
+            new_len = (n2 >= 2 ? na[2] + 0 : 1)
+            if (old_len > 0) { os = old_start; oe = old_start + old_len - 1 }
+            else { os = old_start + 1; oe = old_start }
+            off = new_len - old_len
+            hunks[path] = hunks[path] " " os "," oe "," off
+          }
+        }
+        close(diff)
+      }
+      function remap(p, l,    n, i, parts, os, oe, off, cum) {
+        cum = 0
+        n = split(hunks[p], parts, " ")
+        for (i = 1; i <= n; i++) {
+          if (parts[i] == "") continue
+          split(parts[i], t, ",")
+          os = t[1] + 0; oe = t[2] + 0; off = t[3] + 0
+          if (l >= os && l <= oe) return -1
+          if (l > oe) cum += off
+        }
+        return l + cum
+      }
       {
         sev=tolower($1); conf=tolower($2); path=$3; line=$4; title=$6; body=$7
         if (conf!="high" && conf!="med" && conf!="low") conf="low"
@@ -215,11 +262,23 @@ if [ -s "$PREV_TSV" ]; then
         if (conf=="low" && sev=="important") sev="nit"
         sk = (sev=="important"?0:1) (conf=="high"?0:(conf=="med"?1:2))
         gsub(/\t/," ",title); gsub(/\t/," ",body)
+        if (line != "" && (path in hunks)) {
+          mapped = remap(path, line + 0)
+          if (mapped == -1) {
+            print "TASK-47: carried finding " path ":" line " falls inside a changed hunk range; keeping original line" > "/dev/stderr"
+          } else {
+            line = mapped
+          }
+        }
         loc = (line=="" ? path : path ":" line)
         nr = 1000000 + NR
         printf "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", sk, sev, loc, conf, title, body, nr, orig_sev
       }
-    ' "$CARRIED" >> "$TSV.all"
+    ' "$CARRIED" 2> "$TSV.hunkwarn" >> "$TSV.all"
+    if [ -s "$TSV.hunkwarn" ]; then
+      while IFS= read -r wline; do warn "$wline"; done < "$TSV.hunkwarn"
+    fi
+    rm -f "$TSV.hunkwarn"
     LC_ALL=C sort -t$'\t' -k1,1 -k7,7n "$TSV.all" > "$TSV.all.sorted"
     mv "$TSV.all.sorted" "$TSV.all"
   fi

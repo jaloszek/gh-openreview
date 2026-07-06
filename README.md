@@ -156,13 +156,14 @@ section instead. A fresh finding near a carried one's location always wins
 previous findings to carry, the run is a plain full review — identical to
 today's behavior, no carry-forward, no resolved section.
 
-Known limitation: carried findings keep their original `file:line` from when
-they were first reported. A commit that shifts line numbers in an untouched
-region of the file (e.g. adding a function above it) can leave a carried
-finding's location slightly stale; the existing anchor-validation step
-already flags this as `[unanchored]`/"location approximate" rather than
-dropping it silently, but there is no line-shift tracking — this is a known,
-accepted gap, not a bug.
+Carried findings' `file:line` is re-anchored against the hunk offsets in
+`pr-incremental.diff` before rendering: a commit that inserts or deletes lines
+above a carried finding (in an untouched region) shifts its line number by
+the cumulative hunk offset, so the location stays accurate instead of going
+stale. The existing anchor-validation step still flags a location as
+`[unanchored]`/"location approximate" as a backstop for anything the mapping
+can't resolve (e.g. a carried finding that inconsistently lands inside a
+changed hunk's range keeps its original line and is logged as a warning).
 
 ### Restart / skip guard
 
