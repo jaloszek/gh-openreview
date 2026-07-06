@@ -1604,6 +1604,86 @@ verified end-to-end with a canned two-variant group (verify must emit a
 single clean record — show it); `shellcheck` + `actionlint` + `--selftest`
 clean.
 
+## TASK-45 — Incremental review v2: carry-forward + resolved tracking
+
+**Files:** `lib/gather.sh`, `lib/passes.sh`, `lib/render.sh`,
+`lib/metrics.sh`, `README.md`. **Decided with pawel 2026-07-06.**
+**Motivation (observed live, PR #22):** a push whose delta since the last
+review is clean (an engine-refresh merge) produced "✅ No blocking issues"
+and WIPED nine still-present findings from the sticky comment — the
+incremental path narrows the model's attention to the delta and the render
+replaces the whole comment. Cost saving must not cost previously-verified
+findings.
+
+**Spec:**
+1. **Previous-findings extraction (gather.sh):** when the previous bot
+   comment exists, extract its machine-readable ```tsv block (the agent
+   details section render.sh emits) into `$SCRATCH/prev-findings.tsv`
+   (schema as emitted: sev conf path line anchored title body). Absent or
+   unparseable ⇒ no file (today's behavior).
+2. **Incremental touched-lines map (gather.sh):** alongside
+   `pr-incremental.diff`, emit `$SCRATCH/incr-lines.tsv` (`path<TAB>line`
+   for every new-side changed line — reuse the changed-lines awk pattern
+   from the TASK-41 feed).
+3. **Dynamic scope gate (gather.sh):** incremental mode applies ONLY when
+   BOTH: `pr-incremental.diff` line count < `OPENREVIEW_INCR_MAX_PCT`
+   (default 60, integer percent) of `pr.diff`'s line count, AND
+   `prev-findings.tsv` exists. Otherwise: full review (no incremental
+   files, no carry-forward — exactly today's full path). Log which mode
+   and why.
+4. **Split previous findings (render.sh or a gather helper —
+   implementer's choice, deterministic awk either way):** a previous
+   finding is TOUCHED if any incr-lines row matches same path with line
+   within ±10; else UNTOUCHED.
+   - UNTOUCHED ⇒ carried forward verbatim into the rendered outstanding
+     list (it keeps sev/conf/loc/title/body; it does NOT go through the
+     verify pass — it was verified in an earlier run).
+   - TOUCHED ⇒ written to `$SCRATCH/prev-findings-touched.tsv` for the
+     model (step 5); rendered as RESOLVED unless the model re-emits it.
+5. **Re-check instruction (passes.sh, incremental mode only):** include
+   prev-findings-touched.tsv in the pass-1 context list: "These findings
+   from your previous review are in code that changed since then.
+   Re-verify each against the current code: still present ⇒ re-emit it as
+   a normal finding (with its current file:line); fixed ⇒ do not emit it.
+   Do not re-emit findings you cannot re-confirm." Also soften the
+   existing incremental note: the delta is the review FOCUS, but cross-file
+   effects of the full diff remain in scope.
+6. **Merge + render (render.sh):** outstanding = (verified new findings)
+   ∪ (carried UNTOUCHED findings), deduped — a new finding within ±5
+   lines, same path, of a carried one replaces it (prefer the fresh
+   version). Resolved = TOUCHED previous findings not re-emitted. Render:
+   - outstanding list exactly as today (same sorting; carried items are
+     not visually marked — they are simply still-open findings);
+   - tally line gains `· K resolved since last review` when K>0;
+   - after the findings list, before the machine block, a collapsed
+     `<details><summary>✅ Resolved since last review (K)</summary>` with
+     one `- ~~title~~ · path:line` per resolved finding;
+   - the machine-readable TSV carries ONLY outstanding findings (resolved
+     must not resurrect via the next run's carry-forward).
+7. **Metrics:** `FINDINGS_CARRIED`, `FINDINGS_RESOLVED` in metrics.env +
+   step summary columns. **Restart/full paths unchanged:** no state or
+   restart ⇒ no carry-forward, no resolved section; the skip guard
+   (patch-id+fp) is untouched.
+8. **Known limitation (document in README, do not solve):** carried
+   findings keep their original line numbers; commits that shift lines in
+   untouched regions can leave them slightly stale (anchor validation
+   already marks unanchored locs).
+
+**Acceptance criteria:**
+- Canned-file tests, no LLM: (a) prev TSV + empty incremental verified
+  findings + no touched rows ⇒ all previous findings carried, comment
+  shows them (NOT "no blocking issues"), resolved section absent;
+  (b) prev finding touched + not re-emitted ⇒ resolved section with it,
+  outstanding list without it; (c) touched + re-emitted at shifted line ⇒
+  appears once (fresh version), no resolved entry; (d) no prev TSV ⇒
+  byte-identical to today's render; (e) delta ≥ 60% ⇒ full-review mode,
+  no carry files produced. Show all five.
+- Live evidence after merge (orchestrator runs it): push a trivial commit
+  to a playground branch ⇒ previous findings survive; the wipe scenario
+  from 2026-07-06 cannot reproduce.
+- `shellcheck -S warning lib/*.sh` clean; `bash eval/run.sh --selftest`
+  green; `actionlint` clean if action.yml is touched (it should not be).
+
 ---
 
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
