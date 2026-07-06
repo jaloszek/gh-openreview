@@ -1702,6 +1702,134 @@ findings.
 
 ---
 
+# Wave 5 — deterministic follow-ups (specced 2026-07-06, evening)
+
+All four tasks are LLM-free (no eval gate needed — the free tier is
+throttled and the paid tier is erroring today; see the 07-06 status
+notes). Each closes a gap the wave-4 live work surfaced. 46+47 are
+independent of 48+49; within a pair the files are disjoint.
+
+## TASK-46 — compare.sh: mechanism-aware scoring for adjacent bugs
+
+**Files:** `eval/compare.sh`, `eval/README.md`, selftest assets.
+**Motivation:** documented undercount — adjacent-class bugs (hard
+A01/A03) score as misses because the answer key lists the unchanged-code
+crash site while reviewers anchor at the causing diff line. The golden
+TSVs (`eval/golden/hard.tsv`) ALREADY carry `scope` and `mechanism` ERE
+columns (TASK-35) — compare.sh just doesn't use them.
+
+**Spec:**
+1. New optional third arg: `eval/compare.sh <pr> <answer-key.md>
+   [<golden.tsv>]`. When given, rows in the golden TSV with
+   `scope=adjacent` are scored by the run.sh adjacent rule instead of
+   file+line: same file OR mechanism-ERE match (case-insensitive) against
+   the finding's title+body; line only as ±15 tiebreaker. Report these as
+   a separate `adjacent m/k` block (do NOT fold into the seeded m/k),
+   mirroring run.sh's recall vs recall_adjacent split.
+2. Deep-diagnosis rows (`scope=diff` with a mechanism ERE) additionally
+   report `deep`/`shallow` per hit, like run.sh.
+3. Without the third arg: behavior byte-identical to today.
+4. `--selftest`: extend with canned cases — adjacent hit via mechanism
+   (diff-side anchor), adjacent miss, deep vs shallow hit, and
+   no-golden-arg regression.
+
+**Acceptance:** selftest green offline incl. the four new cases; live
+run `bash eval/compare.sh 22 eval/hard-src/BUGS.md eval/golden/hard.tsv`
+shows A03 credited via mechanism (the lease finding anchors diff-side)
+and the deep/shallow split for D01–D04; `shellcheck -S warning
+eval/compare.sh` clean; `eval/run.sh --selftest` untouched.
+
+## TASK-47 — Carried findings: hunk-offset line re-anchoring
+
+**Files:** `lib/gather.sh` (or render.sh — implementer's choice, one
+place), `README.md` (drop the known-limitation sentence), canned tests.
+**Motivation:** TASK-45's documented limitation — carried findings keep
+their original line numbers; commits that insert/delete lines ABOVE a
+finding leave its loc stale.
+
+**Spec:**
+1. Deterministic line mapping from `pr-incremental.diff` hunk headers:
+   for each file, build (old-start, old-len, new-start, new-len) tuples;
+   a carried finding's line L in file F maps to L + cumulative offset of
+   all hunks whose old-range ends before L. Findings inside a changed
+   hunk's old-range are by definition TOUCHED (±10 rule) and never
+   carried, so the mapping only ever applies clean offsets — assert this
+   (a carried finding landing inside a hunk range ⇒ warn + keep original
+   line, never crash).
+2. Apply the mapping where the carried rows are converted for render
+   (single awk stage; plain arrays only).
+3. Update the machine-TSV rows too (carried findings must round-trip
+   with corrected lines so the NEXT run's carry starts from good locs).
+
+**Acceptance:** canned tests: (a) insertion of 10 lines above a carried
+finding at line 50 ⇒ rendered loc 60; (b) deletion above ⇒ shifted down;
+(c) hunk far below ⇒ unchanged; (d) multiple hunks cumulative; (e) a
+doctored carried row inside a hunk range ⇒ warn + original line. Show
+all five. `shellcheck` clean; `eval/run.sh --selftest` green; render
+output byte-identical when pr-incremental.diff is absent.
+
+## TASK-48 — Voting v2: split independently-corroborated co-located bugs
+
+**Files:** `lib/common.sh` (`vote_merge`) — ON BRANCH
+`wip/task-44-voting` (do not touch main). Canned tests only, no gate.
+**Motivation:** found live during TASK-44's healthy run —
+location-grouping merged two DISTINCT real bugs at `api.py:69`
+(actor-never-recorded + missing STATUS_LABELS entry) into one VARIANT
+record, and the verify pass keeps only one mechanism. Competing
+*diagnoses* of one bug should stay variants; independently corroborated
+*different* bugs should not.
+
+**Spec:** in `vote_merge`'s variant clustering: when a group contains
+≥2 variant clusters and EACH cluster independently has votes ≥ 2
+(distinct passes), emit each such cluster as its OWN record (plain, no
+VARIANT markers, conf per its own votes) instead of joining them.
+Clusters with fewer than 2 votes still join the strongest cluster's
+VARIANT record as today (they remain competing diagnoses). Update the
+`VOTE_MULTIVARIANT_GROUPS` metric to count only actually-joined groups;
+add `VOTE_SPLIT_GROUPS`.
+
+**Acceptance:** canned candidate files: (a) 3 passes, two distinct
+bodies each seen in 2+ passes at same loc ⇒ TWO plain records;
+(b) 3 passes, one body in 2 passes + a different body in 1 pass ⇒ ONE
+VARIANT record (unchanged behavior); (c) N=1 path untouched
+(byte-identity re-check). Show all three. `shellcheck -S warning
+lib/common.sh` clean on the branch.
+
+## TASK-49 — Playground engine refresh script
+
+**Files:** new `eval/refresh-playground.sh`, `eval/README.md` (replace
+the manual recipe with the script invocation).
+**Motivation:** the manual refresh (merge main into base, strip
+`eval/`+`docs/`, merge base into head, push both) was done by hand twice
+on 2026-07-06; it is error-prone (conflict resolution, the strip list,
+push order) and now load-bearing (playgrounds run the PR branch's
+engine).
+
+**Spec:**
+1. `eval/refresh-playground.sh <base-branch> <head-branch>` (e.g.
+   `eval/live-hard-base eval/live-hard`). Refuses to run with a dirty
+   working tree or when either branch is missing on origin. Remembers
+   the starting branch and always returns to it (trap on EXIT).
+2. Steps: fetch origin; checkout -B base origin/base; merge main
+   (--no-edit); on conflict OR clean merge alike, `git rm -rf
+   --ignore-unmatch eval docs PROVENANCE.md`; verify no unmerged paths
+   remain (else abort with instructions, aborting the merge); commit if
+   needed; push; same base→head merge+push. Echo each step via the
+   common.sh logging helpers (source it; stdout stays clean).
+3. Safety: never force-push; never touch main; abort (with `die`) if
+   the merge would leave `eval/` or `docs/` present in the tree; print
+   the two pushed SHAs at the end (stdout — this is the command output).
+4. Do NOT run it against the real remote in verification — verify
+   against a local file:// clone fixture (script a temp origin with the
+   three branches, run the script pointed at it, assert tree contents).
+
+**Acceptance:** scripted temp-remote test showing: refresh succeeds,
+head tree contains lib/ at main's version and neither eval/ nor docs/;
+dirty-tree refusal; missing-branch refusal; starting branch restored.
+`shellcheck -S warning eval/refresh-playground.sh` clean.
+
+---
+
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
