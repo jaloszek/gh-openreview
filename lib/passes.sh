@@ -104,6 +104,14 @@ if [ -s "$SCRATCH/co-change.md" ]; then
   CO_CHANGE_CONTEXT="- $S/co-change.md — historically coupled files were not updated — check whether this PR forgot a required companion change (migration, test, config, docs). Only flag when the omission is plausible from the diff."
 fi
 
+# Changed-symbol consumer feed (TASK-41): unchanged sites reading a symbol
+# (constant/def/class/shell function) this PR's diff changed, when gather.sh
+# found any.
+SYMBOL_CONSUMERS_CONTEXT=""
+if [ -s "$SCRATCH/symbol-consumers.md" ]; then
+  SYMBOL_CONSUMERS_CONTEXT="- $S/symbol-consumers.md — symbol-consumers.md shows UNCHANGED code that reads symbols this PR changed. Check each consumer against the symbol's NEW semantics — a consumer that still assumes the old value, format, or contract is a real finding. Anchor it to the diff line that changed the symbol."
+fi
+
 GENERATE_FAILED=0
 
 # --- PASS 1: GENERATE --------------------------------------------------------
@@ -121,6 +129,7 @@ $INCREMENTAL_CONTEXT
 $OPEN_PRS_CONTEXT
 $REGRESSION_CONTEXT
 $CO_CHANGE_CONTEXT
+$SYMBOL_CONSUMERS_CONTEXT
 - $S/pr-comments.md — existing human + bot discussion, including inline review threads tagged [OPEN]/[RESOLVED]. Defer to humans: do NOT repeat a point already raised in an [OPEN] thread, and NEVER re-raise anything in a [RESOLVED] thread.
 - $S/prev-review.md — your previous review of an EARLIER version of this PR (may say '(no previous review)').
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.
