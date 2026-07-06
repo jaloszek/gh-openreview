@@ -406,11 +406,45 @@ FPs automatically). Machine-readable rows land in
 `eval/.work/compare-<pr>.tsv` (`reviewer \t bug_id \t hit(0|1)`). It always
 exits 0 — this is a report, not a merge gate.
 
-Note: `compare.sh` uses a single file+line rule for every key row, unlike
-`run.sh`'s golden TSVs which score `scope=adjacent` bugs by mechanism only
-(location-independent). `eval/hard-src/BUGS.md`'s three adjacent/interaction
-bugs (A01–A03) list the unchanged-code crash *site* as their file/line, while
-a live reviewer typically cites the diff line that *caused* it — so
-`compare.sh` undercounts those relative to a mechanism-aware score. Read a
-`compare.sh` "miss" on an adjacent-scope id alongside the reviewer's actual
-comment text before concluding it was truly missed.
+### Mechanism-aware scoring: the optional `golden.tsv` third arg
+
+By default `compare.sh` uses a single file+line rule for every answer-key
+row, unlike `run.sh`'s golden TSVs which score `scope=adjacent` bugs by
+mechanism only (location-independent — see "Golden TSV columns 7–8" above).
+`eval/hard-src/BUGS.md`'s three adjacent/interaction bugs (A01–A03) list the
+unchanged-code crash *site* as their file/line, while a live reviewer
+typically cites the diff line that *caused* it — so the plain `compare.sh
+<pr> <answer-key.md>` invocation undercounts those relative to a
+mechanism-aware score.
+
+Pass the matching `eval/golden/*.tsv` as a third argument to opt into that
+scoring for the same PR:
+
+```bash
+bash eval/compare.sh 22 eval/hard-src/BUGS.md eval/golden/hard.tsv
+```
+
+This adds, without changing the plain two-arg output at all (omit the third
+arg to reproduce it byte-for-byte):
+
+- **Deep/shallow tags** on the existing per-bug hit lines, for any
+  `scope=diff` golden row that also carries a `mechanism` ERE: `HIT (deep)`
+  when the matched finding's title+body satisfies the mechanism, `HIT
+  (shallow)` when it doesn't (right line, wrong reason — same distinction as
+  `run.sh`'s `recall_deep`).
+- A separate **`adjacent found m/k`** block for `scope=adjacent` golden rows,
+  never folded into the `seeded found m/k` count above it (mirroring
+  `run.sh`'s `recall_adjacent` split). A candidate finding qualifies ONLY
+  when its title+body satisfies the mechanism ERE (case-insensitive) — the
+  file deliberately does not gate the hit, because `compare.sh` scores a
+  live reviewer's free-text comment where the diagnosis is routinely
+  anchored at the causing diff line in a different file than the answer
+  key's crash site (that's the whole point of scoring adjacency). Same-file
+  alone is NOT enough: during development that rule falsely credited A02
+  via a same-file finding that was actually diagnosing D04. Among
+  qualifying candidates, a same-file one wins first, then the closest by
+  `|line delta|` — both only pick which finding is reported as the anchor,
+  never whether the bug counts as hit.
+
+Machine-readable output (`eval/.work/compare-<pr>.tsv`) is unchanged by the
+third arg; the adjacent/deep numbers are report-only for now.

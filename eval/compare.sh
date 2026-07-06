@@ -140,14 +140,87 @@ unmatched_findings() {
   ' "$1" > "$4"
 }
 
+# score_golden <golden.tsv> <findings.tsv> <adjacent-out.tsv> <deep-out.tsv>
+# Mechanism-aware scoring (TASK-46) driven by the scope/mechanism columns
+# `eval/golden/*.tsv` carries (see `eval/run.sh`'s TASK-35 rule, which this
+# mirrors with one deliberate difference explained below).
+#
+# scope=adjacent rows (mechanism required): the answer key's file/line is
+# the unchanged-code crash site, but a reviewer plausibly anchors at the
+# causing diff line in a DIFFERENT file — so a candidate finding qualifies
+# ONLY on a mechanism-ERE match against its title+body. Same-file alone is
+# NOT enough: it would credit an unrelated finding that merely shares the
+# file (observed live: A02 falsely credited by the D04 finding). Among
+# qualifying candidates, same-file wins first, then smallest |line delta|
+# (both are tiebreakers for the reported anchor, never part of the hit
+# test).
+# <adjacent-out.tsv> rows: id \t hit(0|1) \t anchor("file:line" or "-").
+#
+# scope=diff rows with a non-empty mechanism: hit as the normal file+line
+# (+-tol) rule already used elsewhere; among matches, a deep hit is one
+# whose finding text also satisfies the mechanism ERE, otherwise shallow.
+# <deep-out.tsv> rows: id \t hit(0|1) \t deep(0|1).
+# Rows with scope=diff and no mechanism are ignored here (already scored by
+# match_key).
+score_golden() {
+  local golden="$1" findings="$2" adjout="$3" deepout="$4"
+  : > "$adjout"
+  : > "$deepout"
+  awk -F'\t' -v OFS='\t' -v tol="$TOL" -v adjout="$adjout" -v deepout="$deepout" '
+    NR == FNR {
+      if ($0 ~ /^#/ || NF < 3) next
+      ng++; gid[ng] = $1; gfile[ng] = $2; gline[ng] = $3 + 0
+      gscope[ng] = (NF >= 7 && $7 != "") ? $7 : "diff"
+      gmech[ng]  = (NF >= 8) ? tolower($8) : ""
+      next
+    }
+    NF >= 4 {
+      nf++; ffile[nf] = $2; fline[nf] = $3 + 0
+      ftext[nf] = tolower($4 (NF >= 5 ? " " $5 : ""))
+    }
+    END {
+      for (g = 1; g <= ng; g++) {
+        if (gscope[g] == "adjacent") {
+          best = 0; bestd = -1; bestf = 0
+          for (i = 1; i <= nf; i++) {
+            if (gmech[g] == "" || ftext[i] !~ gmech[g]) continue
+            d = fline[i] - gline[g]; if (d < 0) d = -d
+            samef = (ffile[i] == gfile[g]) ? 1 : 0
+            if (best == 0 || samef > bestf || (samef == bestf && d < bestd)) {
+              best = i; bestd = d; bestf = samef
+            }
+          }
+          if (best > 0) print gid[g], 1, ffile[best] ":" fline[best] >> adjout
+          else print gid[g], 0, "-" >> adjout
+        } else if (gmech[g] != "") {
+          hit = 0; deep = 0
+          for (i = 1; i <= nf; i++) {
+            d = fline[i] - gline[g]; if (d < 0) d = -d
+            if (ffile[i] == gfile[g] && d <= tol) {
+              hit = 1
+              if (ftext[i] ~ gmech[g]) deep = 1
+            }
+          }
+          print gid[g], hit, deep >> deepout
+        }
+      }
+    }
+  ' "$golden" "$findings"
+}
+
 # --- per-reviewer report ----------------------------------------------------
 
 # score_reviewer <label> <comment.md> <mainkey.tsv> <extraskey.tsv> <outtsv>
+#               [<golden.tsv>]
 # Prints the report to stdout; appends label \t id \t hit rows to <outtsv>.
 # Returns 0 always — a missing/unparseable comment is a warning, not a
-# failure.
+# failure. <golden.tsv> is optional (TASK-46): when given, adds a
+# deep/shallow tag to scope=diff+mechanism hits and a separate "adjacent"
+# block for scope=adjacent rows — never folded into the seeded m/k count.
+# Omitting it reproduces pre-TASK-46 output byte-for-byte.
 score_reviewer() {
   local label="$1" commentfile="$2" mainkey="$3" extraskey="$4" outtsv="$5"
+  local goldenfile="${6:-}"
   local tsvblock="$WORK/tsv-$label.tsv" findings="$WORK/findings-$label.tsv"
   local mainperbug="$WORK/perbug-main-$label.tsv" extrasperbug="$WORK/perbug-extras-$label.tsv"
   local mainidx="$WORK/idx-main-$label.tsv" extrasidx="$WORK/idx-extras-$label.tsv"
@@ -168,10 +241,30 @@ score_reviewer() {
   match_key "$extraskey" "$findings" "$extrasperbug" "$extrasidx"
   unmatched_findings "$findings" "$mainidx" "$extrasidx" "$unmatched"
 
+  local golddeep="" goldadj=""
+  if [ -n "$goldenfile" ]; then
+    golddeep="$WORK/golden-deep-$label.tsv"
+    goldadj="$WORK/golden-adj-$label.tsv"
+    score_golden "$goldenfile" "$findings" "$goldadj" "$golddeep"
+  fi
+
   nmain=$(wc -l < "$mainperbug" | tr -d ' ')
   nhit=$(awk -F'\t' '$2 == 1 { c++ } END { print c + 0 }' "$mainperbug")
   printf 'seeded found %s/%s\n' "$nhit" "$nmain"
-  awk -F'\t' '{ printf "  %-4s %s:%s  %s\n", $1, $3, $4, ($2 == 1 ? "HIT" : "miss") }' "$mainperbug"
+  if [ -n "$golddeep" ]; then
+    awk -F'\t' -v deepf="$golddeep" '
+      BEGIN {
+        while ((getline l < deepf) > 0) {
+          n = split(l, a, "\t")
+          if (n >= 3) tag[a[1]] = a[3] == 1 ? " (deep)" : " (shallow)"
+        }
+        close(deepf)
+      }
+      { printf "  %-4s %s:%s  %s%s\n", $1, $3, $4, ($2 == 1 ? "HIT" : "miss"), ($1 in tag ? tag[$1] : "") }
+    ' "$mainperbug"
+  else
+    awk -F'\t' '{ printf "  %-4s %s:%s  %s\n", $1, $3, $4, ($2 == 1 ? "HIT" : "miss") }' "$mainperbug"
+  fi
 
   nextras=$(wc -l < "$extrasperbug" | tr -d ' ')
   if [ "$nextras" -gt 0 ]; then
@@ -185,6 +278,14 @@ score_reviewer() {
     awk -F'\t' '{ printf "  %s:%s  %s\n", $1, $2, $3 }' "$unmatched"
   else
     printf 'unmatched findings: none\n'
+  fi
+
+  if [ -n "$goldadj" ] && [ -s "$goldadj" ]; then
+    local nadj nadjhit
+    nadj=$(wc -l < "$goldadj" | tr -d ' ')
+    nadjhit=$(awk -F'\t' '$2 == 1 { c++ } END { print c + 0 }' "$goldadj")
+    printf 'adjacent found %s/%s (mechanism-aware, not folded into seeded m/k)\n' "$nadjhit" "$nadj"
+    awk -F'\t' '{ printf "  %-4s %s%s\n", $1, ($2 == 1 ? "HIT" : "miss"), ($2 == 1 ? " via " $3 : "") }' "$goldadj"
   fi
 
   awk -F'\t' -v OFS='\t' -v label="$label" '{ print label, $1, $2 }' "$mainperbug" >> "$outtsv"
@@ -313,8 +414,70 @@ selftest() {
     fails=$((fails + 1))
   fi
 
+  # Case 4 (TASK-46): mechanism-aware scoring against a golden.tsv third
+  # arg — adjacent-hit-via-mechanism (G01, diff-side anchor in a different
+  # file), adjacent-miss (G02, no file/mechanism candidate), and the
+  # deep-vs-shallow split for scope=diff+mechanism rows (G03 deep, G04
+  # shallow). The mainkey below mirrors the golden ids/files/lines directly
+  # (no markdown table needed for this synthetic fixture).
+  local mechgolden="$EVAL_DIR/selftest/compare-mech-golden.tsv"
+  local mechmain="$tdir/mech-mainkey.tsv" mechextras="$tdir/mech-extraskey.tsv"
+  printf 'G01\tpkg/queue.py\t66\nG02\tpkg/other.py\t10\nG03\tpkg/deep.py\t14\nG04\tpkg/deep2.py\t32\n' > "$mechmain"
+  : > "$mechextras"
+
+  outtsv="$tdir/compare-mech.tsv"
+  : > "$outtsv"
+  score_reviewer mech "$EVAL_DIR/selftest/compare-mech-comment.md" "$mechmain" "$mechextras" "$outtsv" "$mechgolden" \
+    > "$tdir/report-mech.txt"
+
+  # seeded (file+line) hits stay exactly G03/G04 — adjacent rows never fold in.
+  if [ "$(awk -F'\t' '$3 == 1' "$outtsv" | wc -l | tr -d ' ')" != 2 ]; then
+    warn "selftest: mech fixture — expected exactly 2 seeded hits (G03/G04), adjacent rows must not fold in"
+    fails=$((fails + 1))
+  fi
+  if ! grep -q '^  G01  HIT via pkg/worker.py:40$' "$tdir/report-mech.txt"; then
+    warn "selftest: mech fixture — expected G01 adjacent hit via pkg/worker.py:40 (mechanism match, different file)"
+    fails=$((fails + 1))
+  fi
+  if ! grep -q '^  G02  miss$' "$tdir/report-mech.txt"; then
+    warn "selftest: mech fixture — expected G02 adjacent miss (no file/mechanism candidate)"
+    fails=$((fails + 1))
+  fi
+  if ! grep -q '^  G03  pkg/deep.py:14  HIT (deep)$' "$tdir/report-mech.txt"; then
+    warn "selftest: mech fixture — expected G03 deep hit"
+    fails=$((fails + 1))
+  fi
+  if ! grep -q '^  G04  pkg/deep2.py:32  HIT (shallow)$' "$tdir/report-mech.txt"; then
+    warn "selftest: mech fixture — expected G04 shallow hit (right line, wrong mechanism)"
+    fails=$((fails + 1))
+  fi
+  if ! grep -q '^adjacent found 1/2 (mechanism-aware, not folded into seeded m/k)$' "$tdir/report-mech.txt"; then
+    warn "selftest: mech fixture — expected adjacent summary line 'adjacent found 1/2'"
+    fails=$((fails + 1))
+  fi
+
+  # Case 5 (TASK-46): no-golden-arg regression — calling score_reviewer
+  # without the 6th arg on the SAME comment/mainkey must reproduce the
+  # pre-TASK-46 output exactly (no deep/shallow tags, no adjacent block).
+  outtsv="$tdir/compare-mech-nogolden.tsv"
+  : > "$outtsv"
+  score_reviewer mech-nogolden "$EVAL_DIR/selftest/compare-mech-comment.md" "$mechmain" "$mechextras" "$outtsv" \
+    > "$tdir/report-mech-nogolden.txt"
+  if ! grep -q '^  G03  pkg/deep.py:14  HIT$' "$tdir/report-mech-nogolden.txt"; then
+    warn "selftest: no-golden-arg regression — expected untagged 'G03  pkg/deep.py:14  HIT' line"
+    fails=$((fails + 1))
+  fi
+  if grep -q 'adjacent found' "$tdir/report-mech-nogolden.txt"; then
+    warn "selftest: no-golden-arg regression — did not expect an adjacent block"
+    fails=$((fails + 1))
+  fi
+  if grep -Eq '\(deep\)|\(shallow\)' "$tdir/report-mech-nogolden.txt"; then
+    warn "selftest: no-golden-arg regression — did not expect deep/shallow tags"
+    fails=$((fails + 1))
+  fi
+
   [ "$fails" -eq 0 ] || die "selftest: $fails check(s) failed"
-  ok "selftest: PASS (answer-key parsing, 7-col + 6-col TSV schemas, extras matching, missing-block path, no network)"
+  ok "selftest: PASS (answer-key parsing, 7-col + 6-col TSV schemas, extras matching, missing-block path, mechanism-aware adjacent/deep scoring, no-golden-arg regression, no network)"
 }
 
 # --- main --------------------------------------------------------------------
@@ -326,12 +489,14 @@ if [ "${1:-}" = "--selftest" ]; then
   exit 0
 fi
 
-[ "$#" -ge 2 ] || die "usage: eval/compare.sh <pr-number> <answer-key.md>  (or: eval/compare.sh --selftest)"
+[ "$#" -ge 2 ] || die "usage: eval/compare.sh <pr-number> <answer-key.md> [<golden.tsv>]  (or: eval/compare.sh --selftest)"
 need_cmd gh
 
 PR="$1"
 KEYFILE="$2"
+GOLDENFILE="${3:-}"
 [ -f "$KEYFILE" ] || die "answer key not found: $KEYFILE"
+[ -z "$GOLDENFILE" ] || [ -f "$GOLDENFILE" ] || die "golden tsv not found: $GOLDENFILE"
 
 REPO="${OR_REPO:-}"
 if [ -z "$REPO" ]; then
@@ -352,10 +517,10 @@ OUTTSV="$WORK/compare-$PR.tsv"
 printf 'comparing %s#%s against %s\n' "$REPO" "$PR" "$KEYFILE"
 
 if [ -s "$ORBODY" ]; then
-  score_reviewer openreview "$ORBODY" "$MAINKEY" "$EXTRASKEY" "$OUTTSV"
+  score_reviewer openreview "$ORBODY" "$MAINKEY" "$EXTRASKEY" "$OUTTSV" "$GOLDENFILE"
 fi
 if [ -s "$CLBODY" ]; then
-  score_reviewer claude "$CLBODY" "$MAINKEY" "$EXTRASKEY" "$OUTTSV"
+  score_reviewer claude "$CLBODY" "$MAINKEY" "$EXTRASKEY" "$OUTTSV" "$GOLDENFILE"
 fi
 
 printf '\nmachine-readable output: %s\n' "$OUTTSV"

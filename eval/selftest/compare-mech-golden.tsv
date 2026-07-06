@@ -1,0 +1,5 @@
+# id	file	line	category	sev	description	scope	mechanism
+G01	pkg/queue.py	66	resource-leak	important	lease never cleared	adjacent	(lease).*(never|not).{0,20}(remov|delet|release)
+G02	pkg/other.py	10	logic	important	unlikely bug	adjacent	unlikely_mechanism_xyz
+G03	pkg/deep.py	14	logic	important	wrong denominator	diff	(denominator.*done)|(done.*denominator)
+G04	pkg/deep2.py	32	logic	important	units mismatch	diff	(stale_after.*millisecond)|(millisecond.*stale_after)
