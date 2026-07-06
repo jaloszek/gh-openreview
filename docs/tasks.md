@@ -1517,6 +1517,19 @@ score was the instrument's fault, not the engine's.
 
 ## TASK-43 — Severity anchoring: crashes are never nits (eval-gated)
 
+> **ATTEMPTED 2026-07-06 — GATE FAILED (instrument, not lever), REVERTED.**
+> Both wording rounds failed (a)+(d). Root cause: the offline fixtures have
+> no reproducible crash-rendered-as-nit case — every crash-class golden bug
+> found (B03/B04/B07/E01) was ALREADY rendered important in the baseline;
+> the only nit-rendered important is B05, an omission bug outside the
+> sentence's scope and 0–1/3 flaky, and union-recall noise on B05/B10 sank
+> criterion (d) both rounds. Positive signal worth keeping: E01 2/3→3/3 in
+> BOTH after-rounds. Next design: gate this against the LIVE playground
+> (`eval/compare.sh 19` — where L01/L08-as-nits actually reproduces), or
+> first build a fixture where a crash is reproducibly rendered nit; and
+> judge recall on stable bugs only (flaky 0–1/3 bugs make union recall a
+> coin flip at k=3).
+
 **Files:** `prompts/generate.txt` only. Protocol identical to TASK-26/27.
 **Motivation:** measured on live PR #19 — the pipeline rendered L01
 (guaranteed `IndexError` on ordinary input) and L08 (connection leak) as

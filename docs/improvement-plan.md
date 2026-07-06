@@ -155,6 +155,23 @@ needed. Session output:
 - **Still pending, ready to pick up:** TASK-26's eval gate (never run) and
   TASK-28's gate (`wip/task-28-triage`); both protocols are fully written.
 
+Wave-4 execution notes (2026-07-06, same day):
+- **TASK-40 shipped** (`eval/compare.sh`); first automated scores match the
+  manual head-to-head modulo the documented adjacent-class location
+  mismatch (key lists crash site, reviewers cite diff line).
+- **TASK-43 attempted — gate failed, reverted** (see its tasks.md header).
+  The lesson is about the *instrument*: offline fixtures already render
+  every found crash-class bug as important, so the live-observed
+  L01/L08-as-nits miscalibration has no offline signal to move. Severity
+  experiments must gate against the live playground (compare.sh) or a
+  purpose-built fixture. Bonus data point: E01 stabilized 2/3→3/3 in both
+  after-rounds.
+- **Operational:** free tier healthy today (1 timeout in ~50 calls, no
+  quota signature; ~70 min for a 3-round gate). Decision with pawel:
+  remaining gate/re-baseline work (TASK-42/44) runs on the PAID flash tier
+  (`opencode/deepseek-v4-flash`) — same model, faster, zero-retention;
+  the action's shipped free default is unchanged.
+
 ## Status update — 2026-07-04 (context/format/benchmark session)
 
 Shipped on top of the 07-03 state:
