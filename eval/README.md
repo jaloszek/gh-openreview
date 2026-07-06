@@ -341,13 +341,18 @@ Three operational facts learned live (2026-07-04):
   decontaminated this way on 2026-07-04. **Extended 2026-07-06: strip
   `docs/` as well** — the improvement plan and task specs now describe the
   seeded bugs and their mechanisms (benchmark sections, wave-4 specs), so
-  they are answer-key material too. The refresh recipe below therefore ends
-  with `git rm -rf eval docs` before committing the merge.
+  they are answer-key material too. `eval/refresh-playground.sh` (below)
+  strips `eval`, `docs`, and `PROVENANCE.md` on every refresh.
 
 - **The playground runs the PR branch's engine**, not main's (`uses: ./action`
-  after checking out the PR head). After engine changes on main, refresh it:
-  `git checkout eval/live-playground-base && git merge main && git push`,
-  then merge the base branch into `eval/live-playground` and push.
+  after checking out the PR head). After engine changes on main, refresh it
+  with `eval/refresh-playground.sh <base-branch> <head-branch>`, e.g.
+  `eval/refresh-playground.sh eval/live-playground-base eval/live-playground`
+  — it merges main into the base branch, strips the answer-key material,
+  then merges the base branch into the head branch the same way, and pushes
+  both (never force, never touches main). Run it with cwd inside the repo
+  clone you want refreshed; it refuses a dirty working tree or a missing
+  branch, and always restores the branch you started on.
 - **Display-only changes don't invalidate the skip guard** (by design — the
   fingerprint covers passes.sh/prompts/models, not render.sh), so a format
   upgrade won't re-render an already-reviewed PR on its own. Use
