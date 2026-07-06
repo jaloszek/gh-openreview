@@ -1559,6 +1559,22 @@ commit only on acceptance with numbers in the body; no shell changes.
 
 ## TASK-44 — Voting v2: verify-as-judge variant selection (eval-gated)
 
+> **ATTEMPTED 2026-07-06 — GATE BLOCKED-THROTTLED, PARKED on
+> `wip/task-44-voting`** (TASK-28 precedent). Implementation complete and
+> structurally verified: N=1 byte-identical (stash-diff proven), canned
+> two-variant merge correct, and one healthy live vote=3 run showed the
+> full mechanism working — 3 diversified generates → 6 groups (5
+> multi-variant) → verify emitted 6 clean records, zero VARIANT markers,
+> correct mechanisms kept. Gate unjudgeable: free tier entered sustained
+> throttling mid-after-arm (~90 min of every call timing out) and the
+> paid tier hard-errored (4 distinct server errors that day). To finish:
+> re-run only the after arm (`EVAL_RUNS=2 OPENREVIEW_VOTE_PASSES=3 …
+> hard subtle` + k=1 quiet/clean) on a healthy tier; before-arm numbers
+> are in improvement-plan. Design nuance found live: location-grouping
+> can merge two DISTINCT co-located bugs (api.py:69 actor-audit + O02
+> label gap) into one variant record and verify keeps only one —
+> consider a variant-clustering tweak before accepting.
+
 **Files:** `lib/passes.sh`, `lib/common.sh` (merge helper),
 `prompts/verify.txt` (one added paragraph), `lib/metrics.sh`,
 `action/action.yml` (input), `README.md`.

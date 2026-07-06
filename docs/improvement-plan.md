@@ -191,6 +191,20 @@ Wave-4 execution notes (2026-07-06, same day):
   review (`418/200 lines`), findings intact; trivial delta → incremental
   path, `11 carried, 0 resolved`, comment unchanged. The wipe cannot
   reproduce.
+- **TASK-44 attempted — BLOCKED-THROTTLED, parked on `wip/task-44-voting`**
+  (see its tasks.md header). Structurally verified incl. one healthy live
+  vote=3 run (5 multi-variant groups → verify kept correct mechanisms,
+  stripped all markers). Before-arm reference (vote=1, free tier, k=2
+  hard/subtle): hard recall 5/7, deep 3/5 (D01 0/2, D02 1/2, D03 2/2,
+  D04 2/2); subtle 3/3; quiet/clean pass. Only the after arm needs
+  re-running on a healthy tier.
+- **Free-tier quota signature CONFIRMED by end of day** (revising the
+  morning's "healthy" assessment): after ~8 hours of eval-gate usage the
+  free tier entered sustained throttling (~16:13–17:43+, every call incl.
+  a trivial prompt exceeding 120 s), and the paid flash tier returned
+  "Unexpected server error" on 4 distinct occasions across the day.
+  Practical rule: budget ONE full eval gate per day on the free tier, or
+  fix paid-tier access before the next gate-heavy session.
 
 ### Re-baseline after full-project trees (2026-07-06, free flash tier)
 
