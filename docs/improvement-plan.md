@@ -172,6 +172,43 @@ Wave-4 execution notes (2026-07-06, same day):
   (`opencode/deepseek-v4-flash`) — same model, faster, zero-retention;
   the action's shipped free default is unchanged.
 
+### Re-baseline after full-project trees (2026-07-06, free flash tier)
+
+TASK-42 done: every fixture's `tree/` is now the complete post-PR project
+(all 17 `metrix` modules for playground/quiet/subtle/noisy/clean, per-file
+provenance in each `tree/PROVENANCE.md`; `hard`/`kotlin` verified already
+complete — **note `hard`'s tree was never starved**, so its numbers below
+are a clean re-measurement, not a tree effect). Intended for the paid flash
+tier per the decision above, but `opencode/deepseek-v4-flash` failed its
+smoke test twice ("Unexpected server error", refs err_574a38a1 /
+err_dbe2a434), so the runs used `opencode/deepseek-v4-flash-free`
+(healthy). **This table replaces the "corrected eval baseline" (07-03
+section) as the current reference.**
+
+| Fixture | k | Result |
+|---|---|---|
+| playground | 3 | recall 11/12 union (important-only 10/11), precision 23/27 = 0.85; B10 0/3 (MD5-token miss), B05 1/3 flaky |
+| hard | 3 | recall 6/7 diff-scope (was 5/7), **recall_deep 3/6** (D02/D03/D04 3/3 deep; D01 found 1/3, deep 0/3), **recall_adjacent 0/3** (unchanged), precision 16/19 = 0.84; A01/A02/A03/O01 0/3, E01 3/3, O02 2/3 |
+| quiet | 1 | 0 importants, 0 nits — budgets pass |
+| clean | 1 | 0 findings — clean-control PASS |
+
+Reading the hard numbers honestly: offline `recall_adjacent` did NOT move —
+and could not have moved from tree enrichment, because hard's tree already
+shipped all six `queued/` modules. Insight #3's "instrument's fault"
+hypothesis is refuted for `hard` specifically; the offline-vs-live adjacent
+gap must come from something else (live gather context feeds, model tier,
+or the matcher). One concrete matcher artifact found this run: hard run 3
+DID surface A03's mechanism ("Leases are written but never cleaned up …
+nothing in this PR ever deletes the entry — neither mark_done, requeue, nor
+cancel_job") but anchored it at `queued/worker.py:40` (the diff side) while
+the golden row anchors `queued/queue.py`, and the wording also slips the
+mechanism ERE (the regex wants `clear|delet|remov|release` within 20 chars
+of the negation; "nothing in this PR ever deletes" puts 21 between them).
+So adjacent-class misses are partly scoring fidelity (the same
+diff-line-vs-crash-site mismatch already documented for `compare.sh`),
+partly real. Wall-clock: playground+hard k=3 ≈ 17.5 min, quiet+clean k=1 ≈
+2 min; zero failed/throttled runs.
+
 ## Status update — 2026-07-04 (context/format/benchmark session)
 
 Shipped on top of the 07-03 state:

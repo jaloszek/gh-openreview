@@ -232,14 +232,29 @@ Violations print a `✗ expectation failed: ...` line, add
    `pr-commits.md`, `linked-issues.md`, `pr-comments.md`, `prev-review.md`
    (use the placeholder texts gather emits — e.g. `(no linked issues)` — when
    a file has no content).
-2. Add `eval/fixtures/<name>/tree/` — the **post-PR state** of the invented
-   project: every file the diff touches (with the diff applied) plus any
-   module the touched code imports/references, so the checkout looks like a
-   real PR head. `run.sh` copies `tree/` into the run dir root before
-   `lib/passes.sh` runs, so the model's file reads land on real source
-   instead of an empty project (a fixture without `tree/` still runs, but
-   `run.sh` warns once that agentic file reads will see an empty project —
-   this taints any finding that depends on reading beyond the diff).
+2. Add `eval/fixtures/<name>/tree/` — the **post-PR state of the COMPLETE
+   project**, not just the files the diff touches: every module the invented
+   project ships, so the checkout looks like a real full PR-head checkout
+   instead of an island of 2-4 files. `run.sh` copies `tree/` into the run
+   dir root before `lib/passes.sh` runs, so the model's file reads — inside
+   the diff's files or anywhere else in the project — land on real source
+   instead of an empty/incomplete tree (a fixture without `tree/` still
+   runs, but `run.sh` warns once that agentic file reads will see an empty
+   project — this taints any finding that depends on reading beyond the
+   diff). This matters most for `recall_adjacent` scoring (see `hard/`
+   below): a bug whose mechanism lives in unchanged code is only findable if
+   that unchanged code is actually present in the checkout.
+   Files the diff touches keep whatever content the diff leaves them at —
+   never hand-edit those. Files the diff does NOT touch are free supporting
+   context: source them from the fixture's own other diff-touched files
+   where a genuinely bug-free version already exists (reverse-apply the
+   owning diff with `patch -R` to reconstruct a pre-bug base when needed),
+   or hand-fix the one specific planted bug in a copy borrowed from a
+   fixture that shares the same invented project, so a fixture's noise
+   budget is never contaminated by another fixture's planted bug leaking in
+   through an unrelated "context" file. Document every added/replaced file's
+   source and reasoning in a `tree/PROVENANCE.md` — see
+   `eval/fixtures/playground/tree/PROVENANCE.md` for the pattern.
 3. `bash eval/freeze.sh eval/fixtures/<name>` — regenerates the derived
    `pr-numbered.diff` and `commentable-lines.tsv` from `pr.diff` with the
    same awk transforms as `lib/gather.sh`, and checks `tree/` for
