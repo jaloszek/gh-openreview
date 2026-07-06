@@ -346,3 +346,47 @@ Three operational facts learned live (2026-07-04):
 
 **Note to the maintainer:** this task does not create the branch or PR — do
 that manually using the steps above, and keep it open indefinitely.
+
+### Scoring a live PR: `eval/compare.sh`
+
+Both live reviewers post a `` ```tsv `` fenced machine-readable block in
+their sticky comment (openreview always has; `claude-code-review.yml` was
+updated 2026-07-06 to require the same block behind a hidden
+`<!-- claude-review -->` marker — older comments predate this and are
+skipped with a warning, not scored as zero). `eval/compare.sh <pr-number>
+<answer-key.md>` fetches both comments (`gh api`, read-only, no `GH_TOKEN`
+plumbing needed — ambient `gh auth`), extracts the newest of each, tolerates
+both the 7-column openreview schema (`sev conf path line anchored title
+body`) and the leaner 6-column schema, and matches findings against a
+`BUGS.md`-style answer key (`eval/hard-src/BUGS.md`, `eval/live-src/BUGS.md`)
+using the same file + line-within-±5 rule as `run.sh`. It also parses each
+key's "Known unseeded true positives" section into a separate `extras` set
+so a reviewer finding something real-but-unplanted scores as a match, not
+noise.
+
+```bash
+# score the live hard playground PR
+bash eval/compare.sh 22 eval/hard-src/BUGS.md
+
+# score the live 8-bug playground PR
+bash eval/compare.sh 19 eval/live-src/BUGS.md
+
+# deterministic matcher self-test, no network
+bash eval/compare.sh --selftest
+```
+
+Output: a per-reviewer `seeded found m/k` line with per-bug hit/miss,
+`extras matched`, and an `unmatched findings` list for human triage (these
+are *potential* new bugs or false positives — `compare.sh` never calls them
+FPs automatically). Machine-readable rows land in
+`eval/.work/compare-<pr>.tsv` (`reviewer \t bug_id \t hit(0|1)`). It always
+exits 0 — this is a report, not a merge gate.
+
+Note: `compare.sh` uses a single file+line rule for every key row, unlike
+`run.sh`'s golden TSVs which score `scope=adjacent` bugs by mechanism only
+(location-independent). `eval/hard-src/BUGS.md`'s three adjacent/interaction
+bugs (A01–A03) list the unchanged-code crash *site* as their file/line, while
+a live reviewer typically cites the diff line that *caused* it — so
+`compare.sh` undercounts those relative to a mechanism-aware score. Read a
+`compare.sh` "miss" on an adjacent-scope id alongside the reviewer's actual
+comment text before concluding it was truly missed.
