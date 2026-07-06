@@ -100,6 +100,133 @@ awk -v prdesc="$PRDESC" '
 ' "$IN" | LC_ALL=C sort -t$'\t' -k1,1 -k7,7n > "$TSV.all"
 [ -f "$PRDESC" ] || : > "$PRDESC"
 
+# --- Incremental v2 (TASK-45): carry-forward + resolved tracking ------------
+# Previous findings (schema: sev conf path line anchored title body — see
+# gather.sh's prev-findings.tsv extraction) are absent when there's no usable
+# previous state, on restart, or when the dynamic scope gate rejected
+# incremental mode — in every one of those cases this whole block is a no-op
+# and $TSV.all is untouched (today's full-review behavior, byte-for-byte).
+PREV_TSV="$SCRATCH/prev-findings.tsv"
+PREV_TOUCHED_TSV="$SCRATCH/prev-findings-touched.tsv"
+CARRIED="$SCRATCH/.carried.tsv"
+RESOLVED="$SCRATCH/.resolved.tsv"
+n_carried=0
+n_resolved=0
+: > "$CARRIED"
+: > "$RESOLVED"
+
+if [ -s "$PREV_TSV" ]; then
+  # Tolerant re-validation (defensive even though gather.sh already validates
+  # on extraction — canned test fixtures feed this file directly): CRLF-
+  # normalize, skip a header row, skip rows with fewer than 7 tab fields.
+  NORM_PREV="$SCRATCH/.prev-findings.norm.tsv"
+  NORM_TOUCHED="$SCRATCH/.prev-findings-touched.norm.tsv"
+  tr -d '\r' < "$PREV_TSV" | awk -F'\t' 'NF>=7 && tolower($1)!="sev"' > "$NORM_PREV"
+  [ -f "$PREV_TOUCHED_TSV" ] || : > "$PREV_TOUCHED_TSV"
+  tr -d '\r' < "$PREV_TOUCHED_TSV" | awk -F'\t' 'NF>=7 && tolower($1)!="sev"' > "$NORM_TOUCHED"
+
+  # UNTOUCHED = previous findings minus the touched ones (key: path+line+title).
+  # Built with a BEGIN{getline} lookup rather than the two-file NR==FNR idiom:
+  # NR==FNR breaks when the first file is empty (the no-touched-rows case,
+  # e.g. acceptance test (a)) — NR and FNR both restart at 1 on the second
+  # file's first record too, so it gets silently swallowed as "file 1" data.
+  UNTOUCHED="$SCRATCH/.prev-findings-untouched.tsv"
+  awk -F'\t' -v OFS='\t' -v tf="$NORM_TOUCHED" '
+    BEGIN {
+      while ((getline line < tf) > 0) {
+        n = split(line, a, "\t")
+        if (n >= 6) touched[a[3] "\t" a[4] "\t" a[6]] = 1
+      }
+      close(tf)
+    }
+    !(($3 "\t" $4 "\t" $6) in touched)
+  ' "$NORM_PREV" > "$UNTOUCHED"
+
+  # Fresh (this run's verified) finding locations, captured BEFORE carried
+  # rows are merged in, for proximity matching below.
+  FRESH_LOCS="$SCRATCH/.fresh-locs.tsv"
+  awk -F'\t' '
+    {
+      loc=$3; path=loc; line="-1"
+      idx = match(loc, /:[0-9]+$/)
+      if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+      print path "\t" line
+    }
+  ' "$TSV.all" > "$FRESH_LOCS"
+
+  # Dedup rule (item 6): a fresh finding within +-5 lines, same path, of an
+  # UNTOUCHED carried finding replaces it (prefer the fresh version) — drop
+  # it from carry-forward. The same proximity rule decides whether a TOUCHED
+  # finding was re-emitted by the fresh pass (re-emitted -> not resolved).
+  # Same BEGIN{getline} lookup as above — FRESH_LOCS is legitimately empty
+  # whenever this run's verified pass found nothing (test (a)'s exact shape).
+  awk -F'\t' -v OFS='\t' -v win=5 -v lf="$FRESH_LOCS" '
+    BEGIN {
+      while ((getline line < lf) > 0) {
+        n = split(line, a, "\t")
+        if (n >= 2) locs[a[1]] = locs[a[1]] " " (a[2]+0)
+      }
+      close(lf)
+    }
+    {
+      path=$3; line=$4+0; matched=0
+      n=split(locs[path], arr, " ")
+      for (i=1;i<=n;i++) { if (arr[i]!="") { d=arr[i]-line; if (d<0) d=-d; if (d<=win) { matched=1; break } } }
+      if (!matched) print
+    }
+  ' "$UNTOUCHED" > "$CARRIED"
+
+  awk -F'\t' -v OFS='\t' -v win=5 -v lf="$FRESH_LOCS" '
+    BEGIN {
+      while ((getline line < lf) > 0) {
+        n = split(line, a, "\t")
+        if (n >= 2) locs[a[1]] = locs[a[1]] " " (a[2]+0)
+      }
+      close(lf)
+    }
+    {
+      path=$3; line=$4+0; matched=0
+      n=split(locs[path], arr, " ")
+      for (i=1;i<=n;i++) { if (arr[i]!="") { d=arr[i]-line; if (d<0) d=-d; if (d<=win) { matched=1; break } } }
+      if (!matched) print
+    }
+  ' "$NORM_TOUCHED" > "$RESOLVED"
+
+  # Carried/resolved items are model-authored text from an earlier run that
+  # was already egress-sanitized once when first rendered — re-sanitize
+  # anyway (must be idempotent; verified separately) rather than trust it.
+  defang_file "$CARRIED"
+  defang_file "$RESOLVED"
+
+  n_carried=$(wc -l < "$CARRIED" | tr -d ' ')
+  n_resolved=$(wc -l < "$RESOLVED" | tr -d ' ')
+
+  if [ "$n_carried" -gt 0 ]; then
+    # Convert carried rows (sev conf path line anchored title body) into the
+    # same sk/sev/loc/conf/title/body/NR/orig_sev shape flush() emits above,
+    # so carried findings flow through the SAME confidence gate, anchor
+    # validation, and sort as fresh ones. NR is offset well past any fresh
+    # NR so same-rank ties break fresh-first (arbitrary but stable).
+    awk -F'\t' -v OFS='\t' '
+      {
+        sev=tolower($1); conf=tolower($2); path=$3; line=$4; title=$6; body=$7
+        if (conf!="high" && conf!="med" && conf!="low") conf="low"
+        orig_sev=sev
+        if (conf=="low" && sev=="important") sev="nit"
+        sk = (sev=="important"?0:1) (conf=="high"?0:(conf=="med"?1:2))
+        gsub(/\t/," ",title); gsub(/\t/," ",body)
+        loc = (line=="" ? path : path ":" line)
+        nr = 1000000 + NR
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", sk, sev, loc, conf, title, body, nr, orig_sev
+      }
+    ' "$CARRIED" >> "$TSV.all"
+    LC_ALL=C sort -t$'\t' -k1,1 -k7,7n "$TSV.all" > "$TSV.all.sorted"
+    mv "$TSV.all.sorted" "$TSV.all"
+  fi
+
+  rm -f "$NORM_PREV" "$NORM_TOUCHED" "$UNTOUCHED" "$FRESH_LOCS"
+fi
+
 # Confidence gate: drop findings below OPENREVIEW_MIN_CONF entirely (default
 # "low" = keep everything). Suppressed count is reported separately.
 n_suppressed=$(awk -F'\t' -v min="$MIN_CONF" '
@@ -219,7 +346,14 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
 {
   if [ "$n_total" -eq 0 ]; then
     printf '%s\n\n' "$MARKER"
-    printf '✅ No blocking issues found in this diff.\n\n'
+    if [ "$n_resolved" -gt 0 ]; then
+      printf '✅ No blocking issues found in this diff · %d resolved since last review.\n\n' "$n_resolved"
+      printf '<details><summary>✅ Resolved since last review (%d)</summary>\n\n' "$n_resolved"
+      awk -F'\t' '{ printf "- ~~%s~~ · `%s:%s`\n", $6, $3, $4 }' "$RESOLVED"
+      printf '\n</details>\n\n'
+    else
+      printf '✅ No blocking issues found in this diff.\n\n'
+    fi
   else
     # Tally lives IN the header line — one-glance verdict (the field's
     # most-praised element). Safe for dedup: MARKER_MATCH is a substring
@@ -229,6 +363,9 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     if [ "$n_nit" -gt 0 ]; then
       nit_word=$([ "$n_nit" -eq 1 ] && echo nit || echo nits)
       [ -n "$parts" ] && parts="$parts · $n_nit $nit_word" || parts="$n_nit $nit_word"
+    fi
+    if [ "$n_resolved" -gt 0 ]; then
+      parts="$parts · $n_resolved resolved since last review"
     fi
     printf '%s — %s\n\n' "$MARKER" "$parts"
 
@@ -249,6 +386,12 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
       printf -- '- 🟡 _+%d more %s over the cap_\n' "$nits_hidden" "$([ "$nits_hidden" -eq 1 ] && echo nit || echo nits)"
     fi
     printf '\n'
+
+    if [ "$n_resolved" -gt 0 ]; then
+      printf '<details><summary>✅ Resolved since last review (%d)</summary>\n\n' "$n_resolved"
+      awk -F'\t' '{ printf "- ~~%s~~ · `%s:%s`\n", $6, $3, $4 }' "$RESOLVED"
+      printf '\n</details>\n\n'
+    fi
 
     # Agent details block: full machine-readable findings (rendered + capped
     # nits + confidence-suppressed), so agents asked to fix the review see
@@ -308,7 +451,9 @@ awk -F'\t' -v OFS='\t' -v cap="$NIT_CAP" '
   }
 ' "$TSV" > "$FINDINGS_TSV"
 
-ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits, ${n_suppressed} suppressed)"
+rm -f "$CARRIED" "$RESOLVED"
+
+ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits, ${n_suppressed} suppressed, ${n_carried} carried, ${n_resolved} resolved)"
 
 # Record finding counts for telemetry (metrics.sh -> step summary + outputs).
 {
@@ -317,4 +462,6 @@ ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} importa
   echo "OR_FINDINGS_TOTAL=$n_total"
   echo "FINDINGS_SUPPRESSED=$n_suppressed"
   echo "FINDINGS_UNANCHORED=${n_unanchored:-0}"
+  echo "FINDINGS_CARRIED=$n_carried"
+  echo "FINDINGS_RESOLVED=$n_resolved"
 } >> "$SCRATCH/metrics.env" 2>/dev/null || true
