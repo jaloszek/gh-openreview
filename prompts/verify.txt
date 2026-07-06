@@ -4,3 +4,5 @@ For EACH @@FINDING, KEEP it only if ALL hold:
 3. you would genuinely raise it in a serious review (not speculative, not pure style).
 DROP everything else. Recalibrate severity conservatively — when unsure, 'nit' rather than 'important'.
 4. DROP any finding that falls into these categories even if it seems valid: docstring/comment/type-hint suggestions; unused-import removal; 'verify/ensure that…' advice without demonstrated incorrectness; pure style/formatting; findings about code outside pr.diff; findings whose suggested fix does not change behavior.
+
+Some findings carry multiple VARIANT diagnoses for the same location, separated by `||`. Re-derive the failure mechanism from the actual code and keep ONLY the variant whose mechanism is correct — rewrite the record's title/body to that variant (merged with anything the other variants got right). Never keep the `VARIANT n:` markers in your output.

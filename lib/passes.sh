@@ -123,10 +123,45 @@ fi
 
 GENERATE_FAILED=0
 
-# --- PASS 1: GENERATE --------------------------------------------------------
-info "pass 1/2 — generate (model: $OR_MODEL)"
+# --- PASS 1: GENERATE (self-consistency voting, TASK-44) --------------------
+# vote-passes=1 (default) is the ONE generate run, writing straight to
+# review-candidates.md, byte-identical to the pre-voting pipeline. vote-passes
+# N>=2 runs N diversified generate calls to review-candidates-<i>.md (cheap
+# diversification: pass 2 reads files in reverse order, pass 3 starts from the
+# smallest file) and merges the survivors with vote_merge (common.sh) — group
+# by file+line +-5, keep votes>=2 or important/high singletons, and emit
+# multi-variant groups as one VARIANT-joined record for the verify pass to
+# judge (prompts/verify.txt). Fail-open: a failed run is skipped; if only one
+# survives, it is used directly (no merge).
+VOTE_PASSES="${OPENREVIEW_VOTE_PASSES:-1}"
+case "$VOTE_PASSES" in ''|*[!0-9]*|0) VOTE_PASSES=1 ;; esac
+
+info "pass 1/2 — generate (model: $OR_MODEL${VOTE_PASSES:+, vote-passes: $VOTE_PASSES})"
 _t0=$SECONDS
-oc_run "$OR_DIR" "$OR_MODEL" "You are a senior engineer reviewing a GitHub pull request. Find real problems INTRODUCED by this PR.
+SURVIVORS=""
+i=1
+while [ "$i" -le "$VOTE_PASSES" ]; do
+  if [ "$VOTE_PASSES" -eq 1 ]; then
+    CAND_TARGET="review-candidates.md"
+    PASS_LABEL="pass1"
+    METRICS_PREFIX="PASS1"
+    DIVERSIFY=""
+  else
+    CAND_TARGET="review-candidates-$i.md"
+    PASS_LABEL="pass1-$i"
+    METRICS_PREFIX="PASS1_$i"
+    case "$i" in
+      2) DIVERSIFY="
+
+For this diversified pass: read the changed files in REVERSE order of the diff before writing your findings." ;;
+      3) DIVERSIFY="
+
+For this diversified pass: start from the SMALLEST changed file and work up to the largest." ;;
+      *) DIVERSIFY="" ;;
+    esac
+  fi
+  rm -f "$SCRATCH/$CAND_TARGET"
+  if oc_run "$OR_DIR" "$OR_MODEL" "You are a senior engineer reviewing a GitHub pull request. Find real problems INTRODUCED by this PR.
 
 IMPORTANT: your read and write tools are sandboxed to the project directory. ALL scratch files must use relative paths under $S/ (e.g. $S/pr.diff) — NEVER /tmp or any absolute path, those are rejected.
 
@@ -145,14 +180,48 @@ $SYMBOL_CONSUMERS_CONTEXT
 - The changed files themselves (open them in the project tree) when you need surrounding context to judge a finding — diff hunks alone hide context and cause false positives.
 - CLAUDE.md and anything under conventions/ if present (project root).
 
-$GENERATE_PROMPT
+$GENERATE_PROMPT$DIVERSIFY
 
 $FORMAT_SPEC
 
-Write the records to $S/review-candidates.md with your write tool. Do not post anything. Do not edit or commit tracked files." "pass1" \
-  || { GENERATE_FAILED=1; warn "pass 1 (generate) failed"; }
+Write the records to $S/$CAND_TARGET with your write tool. Do not post anything. Do not edit or commit tracked files." "$PASS_LABEL"; then
+    # vote-passes=1: a successful run is a survivor regardless of file content
+    # (matches pre-voting behavior — an empty/missing candidates file is a
+    # downstream no-findings case, not a generate failure). vote-passes>=2:
+    # require actual content so vote_merge never has to reason about an empty
+    # input file from a run that silently wrote nothing.
+    if [ "$VOTE_PASSES" -eq 1 ] || [ -s "$SCRATCH/$CAND_TARGET" ]; then
+      SURVIVORS="$SURVIVORS $SCRATCH/$CAND_TARGET"
+    fi
+  else
+    warn "pass 1 (generate) run $i/$VOTE_PASSES failed"
+  fi
+  oc_extract_metrics "$SCRATCH/oc-$PASS_LABEL.jsonl" "$METRICS_PREFIX"
+  i=$((i + 1))
+done
 echo "PASS1_SECS=$((SECONDS - _t0))" >> "$METRICS"
-oc_extract_metrics "$SCRATCH/oc-pass1.jsonl" "PASS1"
+
+VOTE_GROUPS_KEPT=0
+VOTE_MULTIVARIANT_GROUPS=0
+if [ -z "$SURVIVORS" ]; then
+  GENERATE_FAILED=1
+  warn "pass 1 (generate) failed: all $VOTE_PASSES run(s) failed"
+else
+  # shellcheck disable=SC2086 # intentional word-splitting of the survivor path list
+  set -- $SURVIVORS
+  if [ "$#" -eq 1 ]; then
+    [ "$1" = "$SCRATCH/review-candidates.md" ] || cp "$1" "$SCRATCH/review-candidates.md"
+  else
+    vote_merge "$SCRATCH/review-candidates.md" "$@"
+    VOTE_GROUPS_KEPT=$(grep -c '^@@FINDING[[:space:]]*$' "$SCRATCH/review-candidates.md" 2>/dev/null || true)
+    VOTE_MULTIVARIANT_GROUPS=$(grep -c 'VARIANT 2:' "$SCRATCH/review-candidates.md" 2>/dev/null || true)
+  fi
+fi
+{
+  echo "VOTE_PASSES=$VOTE_PASSES"
+  echo "VOTE_GROUPS_KEPT=${VOTE_GROUPS_KEPT:-0}"
+  echo "VOTE_MULTIVARIANT_GROUPS=${VOTE_MULTIVARIANT_GROUPS:-0}"
+} >> "$METRICS"
 
 # --- GATE: any candidate findings? -------------------------------------------
 if grep -qE '^@@FINDING[[:space:]]*$' "$SCRATCH/review-candidates.md" 2>/dev/null; then

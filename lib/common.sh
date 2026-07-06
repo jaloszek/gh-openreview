@@ -280,6 +280,183 @@ oc_run() {
   return "$rc"
 }
 
+# --- self-consistency voting: verify-as-judge variant merge (TASK-44) -------
+# vote_merge <outfile> <in1> [<in2> ...]: merge >=2 diversified generate-pass
+# candidate files into one candidates file. Groups @@FINDING records by same
+# file AND line +-5 across passes (a greedy, order-of-appearance clustering —
+# good enough at this tolerance; not a global optimum). votes = number of
+# DISTINCT passes (input files) contributing to a group. A group is kept when
+# votes >= 2, or it is a single-vote group whose finding is sev=important AND
+# conf=high.
+#
+# Within a kept group, findings are clustered into "variants" by normalized
+# body text (lowercased, whitespace-squeezed): two bodies are the SAME variant
+# when they are equal, or one is a prefix/suffix of the other; anything else is
+# a DISTINCT variant. A single surviving variant is emitted unchanged (using
+# the longest raw body among its duplicates, for detail). Multiple variants
+# mean the passes disagree about what's wrong at this location — TASK-37's
+# post-mortem found that silently picking one (longest-body-wins) favored
+# verbose-but-wrong diagnoses over terse-but-right ones. Instead, emit ONE
+# record whose body concatenates up to 3 variants (shortest first) as
+# "VARIANT 1: <body> || VARIANT 2: <body> ..." — prompts/verify.txt tells the
+# verify pass to re-derive the mechanism and keep only the correct variant.
+#
+# @@PRDESC is carried verbatim from the FIRST input file (the earliest
+# surviving pass) — voting never touches the PR-description rating.
+vote_merge() {
+  local out="$1"; shift
+  awk -v pass_total="$#" '
+    function norm(s) {
+      s = tolower(s)
+      gsub(/[ \t]+/, " ", s)
+      gsub(/^ +| +$/, "", s)
+      return s
+    }
+    function flush_finding() {
+      if (have && loc != "") {
+        nf++
+        p = loc; ln = 0
+        idx = match(loc, /:[0-9]+$/)
+        if (idx > 0) { p = substr(loc, 1, idx - 1); ln = substr(loc, idx + 1) + 0 }
+        ffile[nf] = p; fline[nf] = ln
+        fsev[nf] = (sev == "important") ? "important" : "nit"
+        fconf[nf] = (conf == "high" || conf == "med" || conf == "low") ? conf : "low"
+        ftitle[nf] = title
+        fbody[nf] = body
+        fpass[nf] = passidx
+      }
+      have = 0; sev = ""; loc = ""; conf = ""; title = ""; body = ""
+    }
+    FNR == 1 {
+      passidx++
+      if (first_filename == "") first_filename = FILENAME
+      in_prdesc = 0
+    }
+    /^@@FINDING[[:space:]]*$/ { flush_finding(); mode = "f"; have = 1; next }
+    /^@@PRDESC[[:space:]]*$/ {
+      flush_finding()
+      mode = "p"
+      in_prdesc = (FILENAME == first_filename)
+      next
+    }
+    mode == "f" {
+      line = $0
+      if      (line ~ /^sev:/)   { sub(/^sev:[ \t]*/, "", line);   sev = tolower(line) }
+      else if (line ~ /^loc:/)   { sub(/^loc:[ \t]*/, "", line);   loc = line }
+      else if (line ~ /^conf:/)  { sub(/^conf:[ \t]*/, "", line);  conf = tolower(line) }
+      else if (line ~ /^title:/) { sub(/^title:[ \t]*/, "", line); title = line }
+      else if (line ~ /^body:/)  { sub(/^body:[ \t]*/, "", line);  body = line }
+    }
+    mode == "p" && in_prdesc { prdesc = prdesc $0 "\n" }
+    END {
+      flush_finding()
+
+      # --- group by file + line +-5, greedy, in order of appearance ---------
+      ng = 0
+      for (i = 1; i <= nf; i++) {
+        g = 0
+        for (k = 1; k <= ng; k++) {
+          if (gfile[k] == ffile[i]) {
+            d = gline[k] - fline[i]; if (d < 0) d = -d
+            if (d <= 5) { g = k; break }
+          }
+        }
+        if (g == 0) { ng++; g = ng; gfile[g] = ffile[i]; gline[g] = fline[i] }
+        gcount[g]++
+        m = gcount[g]
+        gm_sev[g SUBSEP m]   = fsev[i]
+        gm_conf[g SUBSEP m]  = fconf[i]
+        gm_title[g SUBSEP m] = ftitle[i]
+        gm_body[g SUBSEP m]  = fbody[i]
+        gm_pass[g SUBSEP m]  = fpass[i]
+      }
+
+      # --- votes = distinct passes per group ---------------------------------
+      for (g = 1; g <= ng; g++) {
+        delete seenpass
+        v = 0
+        for (m = 1; m <= gcount[g]; m++) {
+          if (!((gm_pass[g SUBSEP m]) in seenpass)) { seenpass[gm_pass[g SUBSEP m]] = 1; v++ }
+        }
+        gvotes[g] = v
+      }
+
+      for (g = 1; g <= ng; g++) {
+        keep = (gvotes[g] >= 2)
+        if (!keep) {
+          for (m = 1; m <= gcount[g]; m++) {
+            if (gm_sev[g SUBSEP m] == "important" && gm_conf[g SUBSEP m] == "high") { keep = 1; break }
+          }
+        }
+        if (!keep) continue
+        ngroups_kept++
+
+        # --- cluster members into variant equivalence classes ---------------
+        delete var_body; delete var_title; delete var_sev; delete var_conf
+        nv = 0
+        for (m = 1; m <= gcount[g]; m++) {
+          b = gm_body[g SUBSEP m]; nb = norm(b)
+          placed = 0
+          for (vv = 1; vv <= nv; vv++) {
+            rn = norm(var_body[vv])
+            if (nb == rn || index(rn, nb) == 1 || index(nb, rn) == 1) {
+              if (length(b) > length(var_body[vv])) {
+                var_body[vv] = b; var_title[vv] = gm_title[g SUBSEP m]
+              }
+              if (gm_sev[g SUBSEP m] == "important") var_sev[vv] = "important"
+              if (gm_conf[g SUBSEP m] == "high") var_conf[vv] = "high"
+              placed = 1; break
+            }
+          }
+          if (!placed) {
+            nv++
+            var_body[nv] = b; var_title[nv] = gm_title[g SUBSEP m]
+            var_sev[nv] = gm_sev[g SUBSEP m]; var_conf[nv] = gm_conf[g SUBSEP m]
+          }
+        }
+
+        if (nv == 1) {
+          osev = var_sev[1]; oconf = var_conf[1]
+          if (gvotes[g] == pass_total) oconf = "high"
+          printf "@@FINDING\n"       
+          printf "sev: %s\n", osev   
+          printf "loc: %s:%s\n", gfile[g], gline[g]
+          printf "conf: %s\n", oconf 
+          printf "title: %s\n", var_title[1]
+          printf "body: %s\n", var_body[1]  
+        } else {
+          nmultivariant++
+          # order variants by body length ascending (shortest first)
+          for (a = 1; a <= nv; a++) order[a] = a
+          for (a = 1; a <= nv; a++)
+            for (b2 = a + 1; b2 <= nv; b2++)
+              if (length(var_body[order[b2]]) < length(var_body[order[a]])) {
+                t = order[a]; order[a] = order[b2]; order[b2] = t
+              }
+          cap = (nv > 3) ? 3 : nv
+          merged_body = ""; osev = "nit"; oconf = "low"
+          for (a = 1; a <= cap; a++) {
+            vi = order[a]
+            merged_body = merged_body (a > 1 ? " || " : "") "VARIANT " a ": " var_body[vi]
+            if (var_sev[vi] == "important") osev = "important"
+            if (var_conf[vi] == "high") oconf = "high"
+            else if (var_conf[vi] == "med" && oconf != "high") oconf = "med"
+          }
+          printf "@@FINDING\n"       
+          printf "sev: %s\n", osev   
+          printf "loc: %s:%s\n", gfile[g], gline[g]
+          printf "conf: %s\n", oconf 
+          printf "title: %s\n", var_title[order[1]]
+          printf "body: %s\n", merged_body
+          delete order
+        }
+      }
+      printf "@@PRDESC\n"
+      printf "%s", prdesc
+    }
+  ' "$@" > "$out"
+}
+
 # --- per-pass cost/token telemetry --------------------------------------------
 # oc_extract_metrics <jsonl> <prefix>: parse the LAST step_finish event out of
 # an opencode --format json event stream (one JSON object per line) and append

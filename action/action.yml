@@ -30,6 +30,10 @@ inputs:
     description: "opencode model id for the verification pass. Empty falls back to `cheap-model`, then `model`."
     required: false
     default: ""
+  vote-passes:
+    description: "Self-consistency voting: number of diversified generate-pass runs to merge before verification. 1 (default) is today's single-pass behavior, byte-identical. N>=2 runs N generate calls, groups findings by file+line, keeps findings 2+ passes agree on (plus important/high-confidence singletons), and lets the verify pass judge between disagreeing diagnoses of the same location. Costs roughly Nx the generate-pass tokens."
+    required: false
+    default: "1"
   opencode-version:
     description: "Exact opencode version to install (e.g. 1.17.13). opencode ships releases every 1-3 days, so pinning avoids an untested version silently landing mid-run. Empty installs latest — not recommended."
     required: false
@@ -291,6 +295,7 @@ runs:
         OPENCODE_API_KEY: ${{ inputs.opencode-api-key }}
         OPENCODE_CONFIG: ${{ inputs.opencode-config }}
         OPENREVIEW_TRUST_REPO_CONFIG: ${{ inputs.trust-repo-config }}
+        OPENREVIEW_VOTE_PASSES: ${{ inputs.vote-passes }}
       run: ${{ github.action_path }}/../lib/passes.sh
 
     # Deterministic render — no model call, no token. Builds the final comment
