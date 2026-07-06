@@ -126,6 +126,35 @@ Ten roadmap questions decided (yes/no round with pawel):
 10. **Knowledge base lives in the hub fork itself** (§3.4 confirmed as the
     default; separate memory repo demoted to alternative).
 
+## Status update — 2026-07-06 (benchmark re-verification + wave-4 planning)
+
+Independent re-check of both live reviews (PR #19, PR #22) against the
+answer keys confirmed the v1/v2 benchmark numbers; no scoring corrections
+needed. Session output:
+
+- **Answer keys gained "Known unseeded true positives" sections**
+  (`eval/live-src/BUGS.md`, `eval/hard-src/BUGS.md`): 4 real-but-unplanted
+  defects both/either reviewer found (cancel_job-doesn't-cancel, priority-0
+  falsy coercion, score_delta div-by-zero, never-decremented pool counters)
+  — each verified against source. Scorers no longer punish true positives.
+- **`claude-code-review.yml` hardened**: the review body must now end with
+  the same machine-readable TSV block openreview emits + a hidden
+  `<!-- claude-review -->` marker; cleanup matches the marker (legacy
+  patterns kept for old comments) instead of visible header text that was
+  one emoji away from colliding with openreview's comments. Head-to-heads
+  become scriptable.
+- **Wave 4 specced in tasks.md (TASK-40…44)**, ordered by the "context
+  beats prompting" insight: 40 live-benchmark scorer (`eval/compare.sh`,
+  automates the manual head-to-head); 41 changed-symbol consumer feed in
+  gather (the deterministic-context successor TASK-39's failure note
+  prescribed — targets A02, the one bug both reviewers missed); 42 eval
+  fidelity 2 (full-project fixture trees + re-baseline, insight #3); 43
+  severity-anchoring prompt experiment (crashes are never nits — the L01/
+  L08-as-nits miscalibration measured live); 44 voting v2 with
+  verify-as-judge variant selection (the TASK-37 redesign).
+- **Still pending, ready to pick up:** TASK-26's eval gate (never run) and
+  TASK-28's gate (`wip/task-28-triage`); both protocols are fully written.
+
 ## Status update — 2026-07-04 (context/format/benchmark session)
 
 Shipped on top of the 07-03 state:

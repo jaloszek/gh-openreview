@@ -1370,6 +1370,229 @@ accept iff `recall_adjacent` improves to ≥2/3 (union), main recall and
 budgets hold, playground not worse. One wording iteration; revert on final
 failure with both scorecards.
 
+---
+
+# Wave 4 — post-benchmark quality levers (specced 2026-07-06)
+
+Grounded in the measured results of Benchmark v1/v2 (`improvement-plan.md`)
+and the 2026-07-06 independent re-verification of both live reviews against
+the answer keys. Guiding insight (measured, not vibes): **context beats
+prompting** — prompt nudges (TASK-38/39) gated inert-to-harmful, while the
+same engine with rich context caught the targeted bug classes.
+
+Recommended order: 40 → 43 → 42 → 41 → 44. 40/43 are the low-hanging
+fruit (small, deterministic, no LLM in the loop). Also still pending from
+earlier waves: TASK-26's eval gate has never been run, and TASK-28 sits
+implemented-but-ungated on `wip/task-28-triage` — running either gate is a
+ready pickup task in itself (protocol is fully written in each task).
+
+## TASK-40 — Live benchmark scorer (`eval/compare.sh`)
+
+**Files:** new `eval/compare.sh`, `eval/README.md` (short section).
+**Motivation:** the PR #19/#22 head-to-heads were scored by hand. Both
+reviewers now emit a machine-readable TSV block (openreview always did;
+`claude-code-review.yml` was updated 2026-07-06 to require the same block +
+a hidden `<!-- claude-review -->` marker), and both answer keys now carry a
+"Known unseeded true positives" section — everything needed to automate.
+
+**Spec:**
+1. `eval/compare.sh <pr-number> <answer-key.md>` (e.g. `22
+   eval/hard-src/BUGS.md`). Token-scoped like gather: uses `gh` only.
+2. Fetch the PR's issue comments (`gh api … --paginate`). Identify the two
+   review comments: openreview = body starts `## 🤖 OpenCode Review`;
+   Claude = body contains `<!-- claude-review -->` or starts `## 🔍 Code
+   Review`. Take the newest of each. Missing reviewer ⇒ warn and score the
+   other alone.
+3. Extract each comment's ```tsv fenced block (awk between the fences). A
+   reviewer comment without a TSV block ⇒ warn `no machine-readable block —
+   skipping <name>` (older Claude comments predate the requirement).
+   Tolerate both schemas: 7-column (openreview, with `anchored`) and
+   6-column (Claude, without) — detect by header row.
+4. Parse the answer key's markdown tables with awk: any table row whose
+   first cell matches `^[A-Z][0-9]+$` yields `id|file|line`. Rows from a
+   "Known unseeded true positives" section (detect the `##` heading) go to
+   a separate `extras` set.
+5. Match findings to key rows: same file AND line within ±5 (the run.sh
+   rule). Print per reviewer: `seeded found m/k` with per-bug hit/miss
+   lines, `extras matched`, and an `unmatched findings` list for human
+   triage (these are *potential* FPs or new unseeded bugs — never call
+   them FPs automatically).
+6. Exit 0 always (it is a report, not a gate). Machine-readable output:
+   `eval/.work/compare-<pr>.tsv` with `reviewer	bug_id	hit(0|1)` rows.
+
+**Acceptance criteria:**
+- Run against PR #22 + `eval/hard-src/BUGS.md`: openreview scores 9/10
+  seeded + X01 extra; Claude scores ≥8/10 (its comment predates the TSV
+  requirement — the fallback warning path must fire cleanly if the block
+  is absent). Show the output in the summary.
+- A canned-comment selftest (`--selftest`, no network): two fixture comment
+  bodies under `eval/selftest/` exercise both schemas, the missing-block
+  path, and the extras section. Runs green offline.
+- Bash 3.2; `shellcheck -S warning eval/compare.sh` clean; `eval/run.sh
+  --selftest` untouched.
+
+## TASK-41 — Deterministic changed-symbol consumer feed (context lever #1)
+
+**Files:** `lib/gather.sh`, `lib/passes.sh` (context list), `README.md`.
+**Motivation:** the ONE seeded bug both live reviewers missed (hard A02) is
+an adjacent-interaction: a changed constant (`MIN_CHARGE_CENTS`) whose
+unchanged consumer (`invoice_summary`) still assumes the old semantics.
+TASK-39 proved a prompt nudge cannot buy this class (recall dropped);
+its failure note names this exact design as the successor. This feed would
+have put `invoice_summary`'s `if not entry.amount_cents: continue` directly
+in front of the model.
+
+**Spec:**
+1. In `gather.sh`, after `pr.diff` is finalized: extract **changed symbol
+   names** from the diff with awk — names whose *definition* line is
+   added/removed/modified: `^[+-][[:space:]]*[A-Z_][A-Z0-9_]* *=` (constants),
+   `^[+-][[:space:]]*(def|class) [A-Za-z_]` (Python), plus function-style
+   shell definitions `^[+-][a-z_]+\(\)`. Dedup; cap at 12 symbols
+   (most-changed-lines first; log what was dropped — no silent caps).
+2. For each symbol, `git grep -n -w "$sym" -- ':!*.md'` in the checkout,
+   EXCLUDING files already in the diff and excluding the definition file's
+   defining line. Cap 5 consumer sites per symbol.
+3. For each consumer site, emit the site line plus up to 15 lines of its
+   enclosing context (awk: scan back to the nearest `def `/`class `/
+   function-start line, print through the site + 5 lines). Write
+   `$SCRATCH/symbol-consumers.md`: `### <symbol> — consumers not touched by
+   this PR`, then per-site `path:line` + fenced snippet. Run through
+   `sanitize_text`. Hard cap the whole file at 400 lines.
+4. `passes.sh`: include in the pass-1 context list only when the file
+   exists, with the instruction: "symbol-consumers.md shows UNCHANGED code
+   that reads symbols this PR changed. Check each consumer against the
+   symbol's NEW semantics — a consumer that still assumes the old value,
+   format, or contract is a real finding. Anchor it to the diff line that
+   changed the symbol."
+5. Absent-silent: no symbols / no consumers / git grep failure ⇒ no file,
+   no prompt line (`|| true` everywhere; one debug `info`).
+
+**Acceptance criteria:**
+- Scripted test on `eval/hard-src/`: init a temp git repo from `head/`,
+  synthesize the base→head diff, run the extraction — `MIN_CHARGE_CENTS`
+  must be extracted and `invoice_summary`'s consumer site must land in
+  `symbol-consumers.md` (show the file). A diff changing no definitions
+  produces no file.
+- Live evidence (the real gate): `@openreview restart` on PR #22 — report
+  whether A02 is now found; include the finding text or its absence in the
+  summary. One restart, whatever the outcome — the offline eval can't
+  measure this (eval doesn't run gather), so live is the only instrument.
+- `shellcheck -S warning lib/*.sh` clean; runs without the feed are
+  byte-identical (absent-silent regression evidence).
+
+## TASK-42 — Eval fidelity 2: full-project fixture trees + re-baseline
+
+**Files:** every `eval/fixtures/<name>/tree/`, `eval/freeze.sh` (check
+stays), `eval/README.md`, `docs/improvement-plan.md` (baseline table).
+**Motivation:** Benchmark v2 insight #3 — offline fixture scores diverged
+from live behavior because `tree/` holds only touched files; the live runs'
+advantage was agentic reading of the FULL project. The offline 0/3 adjacent
+score was the instrument's fault, not the engine's.
+
+**Spec:**
+1. For each fixture that shares the invented `metrix` project
+   (`playground`, `quiet`, `subtle`, `noisy`, `clean`): extend `tree/` to
+   the complete post-PR project — every module the project ships, not just
+   diff-touched files (source them from the fixture's own base; for
+   `metrix` reuse `eval/live-src/head/` modules where the fixture doesn't
+   override them; document per fixture which files came from where in a
+   `tree/PROVENANCE.md`). Same for `hard` (full `queued/` — it already has
+   all six modules; verify) and `kotlin` (all `src/*.kt`).
+2. `freeze.sh`'s hunk-consistency check must still pass for every fixture
+   (tree files the diff touches are unchanged by this task — only files
+   the diff does NOT touch are added).
+3. Re-baseline: `EVAL_RUNS=3 OPENREVIEW_PASS_TIMEOUT=180` with the free
+   model on `hard` + `playground`, k=1 on `quiet`/`clean`. Record the new
+   numbers (especially hard `recall_adjacent`, previously 0/3) in the
+   improvement-plan status section, replacing the "corrected eval
+   baseline" as the current reference.
+
+**Acceptance criteria:**
+- Every fixture's `tree/` imports resolve within the tree (scripted check:
+  `cd tree && python3 -c "import <each module>"` for Python fixtures — no
+  ImportError from missing sibling modules).
+- `freeze.sh` green on all fixtures; `eval/run.sh --selftest` green.
+- Before/after scorecards for the re-baseline quoted in the summary
+  (throttling caveats noted if the free tier misbehaves).
+
+## TASK-43 — Severity anchoring: crashes are never nits (eval-gated)
+
+**Files:** `prompts/generate.txt` only. Protocol identical to TASK-26/27.
+**Motivation:** measured on live PR #19 — the pipeline rendered L01
+(guaranteed `IndexError` on ordinary input) and L08 (connection leak) as
+*nits*; the answer key rates both important. Benchmark v1 names severity
+calibration as one of the two real gaps vs Fable. This is a calibration
+rule, not a new finding class, so the kill-list is untouched.
+
+**Spec:**
+1. **Before:** `EVAL_RUNS=3` free model on `playground` + `hard`, k=1 on
+   `quiet`/`clean`. Record per-bug hit severity (which golden importants
+   were rendered as nits) and important-only recall.
+2. **Change:** ONE sentence in the Severity block of
+   `prompts/generate.txt`, after the `- nit` line: "A deterministic crash
+   or unhandled-exception path reachable from ordinary input in code this
+   PR introduced is ALWAYS important, never nit — even when the fix is a
+   one-line guard. The same applies to resource leaks on a code path that
+   repeats (per request, per job, per file)."
+3. **After:** identical runs. **Accept** iff: (a) golden importants
+   previously rendered as nits are now important in ≥2/3 runs, (b)
+   `quiet` stays 0 importants (the nit-bait must NOT get promoted — this
+   is the risk to watch), (c) clean stays clean, (d) recall not lower.
+   One wording iteration; on second failure revert and report both
+   scorecards.
+
+**Acceptance criteria:** protocol above with both scorecards quoted;
+commit only on acceptance with numbers in the body; no shell changes.
+
+## TASK-44 — Voting v2: verify-as-judge variant selection (eval-gated)
+
+**Files:** `lib/passes.sh`, `lib/common.sh` (merge helper),
+`prompts/verify.txt` (one added paragraph), `lib/metrics.sh`,
+`action/action.yml` (input), `README.md`.
+**Depends on:** TASK-42 (re-baselined fixtures — gate numbers must be
+measured against the enriched trees, not the starved ones).
+**Motivation:** TASK-37 measured that voting stabilizes the hardest bug
+(D01 1/3→2/2) but its longest-body-wins merge picks verbose shallow
+diagnoses over terse correct ones (deep-recall 3/6→2/6). The lever is
+real; only the variant *selection* failed. Its failure note prescribes
+this design: let the verify pass judge between variants.
+
+**Spec:**
+1. Reuse TASK-37's structure: input `vote-passes` →
+   `OPENREVIEW_VOTE_PASSES` (default 1 = byte-identical today), N
+   diversified generate runs, awk grouping by file + line ±5, votes =
+   distinct contributing passes. Keep groups with votes ≥ 2 plus
+   important/high singletons (unchanged from TASK-37).
+2. **The redesign:** when a kept group's member findings have MULTIPLE
+   distinct bodies (normalize: lowercase, squeeze whitespace; distinct =
+   not a prefix/suffix of each other), do NOT pick one. Emit the group
+   into `review-candidates.md` as ONE record whose body concatenates the
+   variants: `VARIANT 1: <body> || VARIANT 2: <body>` (cap 3 variants,
+   shortest first). Single-variant groups pass through as-is.
+3. `prompts/verify.txt` addition: "Some findings carry multiple VARIANT
+   diagnoses for the same location, separated by `||`. Re-derive the
+   failure mechanism from the actual code and keep ONLY the variant whose
+   mechanism is correct — rewrite the record's title/body to that variant
+   (merged with anything the other variants got right). Never keep the
+   `VARIANT n:` markers in your output."
+4. Fail-open exactly as TASK-37: failed generate runs skipped; one
+   survivor used directly. Metrics: `VOTE_PASSES`, `VOTE_GROUPS_KEPT`,
+   `VOTE_MULTIVARIANT_GROUPS`.
+5. **Eval gate:** `OPENREVIEW_VOTE_PASSES=3`, free model,
+   `PASS_TIMEOUT=180`, `EVAL_RUNS=2` on `hard` + `subtle`, k=1
+   quiet/clean, vote=1 vs vote=3 — accept iff hard `recall_deep` >
+   before (this is the metric TASK-37 regressed; equality is not enough
+   given the extra cost), subtle recall ≥ before, budgets hold, total
+   findings ≤ before×1.3. Report both scorecards.
+
+**Acceptance criteria:** gate above; N=1 path byte-identical (show a
+diff of render output on a canned candidates file); variant records
+verified end-to-end with a canned two-variant group (verify must emit a
+single clean record — show it); `shellcheck` + `actionlint` + `--selftest`
+clean.
+
+---
+
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
@@ -1379,6 +1602,8 @@ failure with both scorecards.
   deferred to a separate initiative and session. TASK-24's dispatch
   workflow is merged but dormant until an App is registered; do not build
   further on it for now.
-- **V/U/W/N/O/L′, Tier 4 (Y/Z/AA)** — design open or eval-dependent.
+- **V/U/N/O/L′, Tier 4 (Y/Z/AA)** — design open or eval-dependent. (W
+  self-consistency voting is now specced as TASK-44 after the TASK-37
+  post-mortem settled the design question.)
 - ~~AG (named-agents refactor)~~ — dropped in favor of TASK-23 (see its
   header for rationale).

@@ -86,6 +86,24 @@ Grep evidence:
 grep -n 'job.metadata\["started_at_ms"\]' eval/hard-src/head/queued/api.py   # E01
 ```
 
+## Known unseeded true positives (do not count as false positives)
+
+Real defects in the fixture code that were NOT planted deliberately but have
+been independently confirmed by reviewers and verified against the source
+(2026-07-06, both live reviewers on PR #22). Scorers must exclude these from
+false-positive counts; finding them is bonus signal, not noise.
+
+| id | file | line | description | found by |
+|----|------|------|-------------|----------|
+| X01 | `queued/api.py` | 63-69 | `cancel_job` sets `job.status = "cancelled"` but the job stays on `queue._heap` and `dequeue` pops by id with no status check — a cancelled queued job is later dispatched and runs anyway; `actor` is accepted but never recorded | both (opencode + Fable) |
+| X02 | `queued/api.py` | 30 | `priority=priority or 5` coerces the valid urgent value `priority=0` to the default 5 (falsy-zero; the heap is a min-heap, so 0 is the most urgent priority a caller can pass) | Fable only |
+
+Grep evidence:
+```
+grep -n 'job.status = "cancelled"' eval/hard-src/head/queued/api.py    # X01 (no heap removal anywhere)
+grep -n 'priority=priority or 5' eval/hard-src/head/queued/api.py      # X02
+```
+
 ## Verification
 
 ```bash

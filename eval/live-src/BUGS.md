@@ -26,6 +26,23 @@ metrix/reports.py    | 11 +++++++++++
 | L07 | metrix/queries.py     | 8    | security        | important | `search_users` builds SQL via `str.format` interpolation — SQL injection |
 | L08 | metrix/queries.py     | 19   | resource-leak   | important | `export_events` returns early on empty `rows`, skipping `cur.close()`/`conn.close()` and leaking the sqlite connection |
 
+## Known unseeded true positives (do not count as false positives)
+
+Real defects NOT planted deliberately, independently confirmed by a reviewer
+and verified against the source (2026-07-06, Fable live review on PR #19).
+Scorers must exclude these from false-positive counts.
+
+| id | file | line | description | found by |
+|----|------|------|-------------|----------|
+| X01 | metrix/reports.py | 18 | `score_delta_percent` divides by `previous` with no guard — `previous == 0` (a brand-new metric's first week) raises `ZeroDivisionError`; same line as seeded L04 but a distinct mechanism | Fable only |
+| X02 | metrix/api.py | 12-26 | `_active_count`/`_in_use` are never decremented or removed anywhere (`release` doesn't touch them), so the "checked out" metric grows monotonically forever — distinct from seeded L05 (the missing lock) | Fable only |
+
+Grep evidence:
+```
+grep -n '/ previous \* 100' head/metrix/reports.py        # X01
+grep -rn '_active_count -= 1' head/metrix/ || echo "no decrement anywhere"   # X02
+```
+
 Verification commands (run from `eval/live-src/`):
 
 ```bash
