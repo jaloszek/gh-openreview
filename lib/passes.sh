@@ -164,6 +164,91 @@ else
     || printf '@@PRDESC\n' > "$SCRATCH/review-verified.md"
 fi
 
+# --- EVIDENCE PACKS (TASK-54): deterministic ground truth for verify ---------
+# Between the passes, extract per-finding code context — the real lines around
+# each candidate's loc, plus repo-wide sites mentioning identifiers the finding
+# names — so the verifier judges claims against extracts instead of
+# re-navigating (or trusting) the repo. Pure text tools, no LLM, no token.
+# Best-effort: on any failure evidence.md is simply absent and verify behaves
+# exactly as before. Disable with OPENREVIEW_EVIDENCE=0.
+build_evidence() {
+  local out="$SCRATCH/evidence.md" rows="$SCRATCH/.evidence-rows.tsv"
+  local loc title idents path line ident n=0 ic hits
+  # One "loc <TAB> title <TAB> idents" row per finding; idents are backticked
+  # tokens mined from title+body, deduped, () stripped.
+  awk '
+    function flush(   text, tok, k) {
+      if (have && loc != "") {
+        gsub(/`/, "", loc)
+        text = title " " body; idents = ""
+        while (match(text, /`[A-Za-z_][A-Za-z0-9_.]*(\(\))?`/)) {
+          tok = substr(text, RSTART + 1, RLENGTH - 2)
+          text = substr(text, RSTART + RLENGTH)
+          sub(/\(\)$/, "", tok)
+          if (length(tok) >= 3 && !(tok in seen)) { seen[tok] = 1; idents = idents " " tok }
+        }
+        gsub(/\t/, " ", title)
+        printf "%s\t%s\t%s\n", loc, title, idents
+      }
+      have = 0; loc = ""; title = ""; body = ""
+      for (k in seen) delete seen[k]
+    }
+    /^@@PRDESC[[:space:]]*$/ { flush(); mode = ""; next }
+    /^@@FINDING[[:space:]]*$/ { flush(); mode = "f"; have = 1; next }
+    mode == "f" {
+      if      ($0 ~ /^loc:/)   { sub(/^loc:[[:space:]]*/, "");   loc = $0 }
+      else if ($0 ~ /^title:/) { sub(/^title:[[:space:]]*/, ""); title = $0 }
+      else if ($0 ~ /^body:/)  { sub(/^body:[[:space:]]*/, "");  body = $0 }
+      else if (body != "")     { body = body " " $0 }
+    }
+    END { flush() }
+  ' "$SCRATCH/review-candidates.md" > "$rows" 2>/dev/null || return 0
+  [ -s "$rows" ] || return 0
+  : > "$out"
+  while IFS=$'\t' read -r loc title idents; do
+    n=$((n + 1)); [ "$n" -gt 12 ] && break
+    path="${loc%:*}"; line="${loc##*:}"
+    case "$line" in ''|*[!0-9]*) continue ;; esac
+    [ -f "$OR_DIR/$path" ] || continue
+    {
+      printf '## FINDING %d — %s (%s)\n' "$n" "$loc" "$title"
+      printf 'Code around %s in the real tree:\n' "$loc"
+      awk -v c="$line" 'NR >= c-20 && NR <= c+20 { printf "%6d| %s\n", NR, $0 }' "$OR_DIR/$path"
+      ic=0
+      # shellcheck disable=SC2086  # idents is a space-joined token list
+      for ident in $idents; do
+        ic=$((ic + 1)); [ "$ic" -gt 4 ] && break
+        hits=$( (cd "$OR_DIR" && grep -rnwF \
+                   --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=vendor \
+                   --exclude-dir=dist --exclude-dir=build --exclude-dir="${SCRATCH_REL#./}" \
+                   -- "$ident" .) 2>/dev/null | cut -c1-200 | head -8 ) || true
+        [ -n "$hits" ] || continue
+        printf 'Sites mentioning `%s`:\n%s\n' "$ident" "$hits"
+      done
+      printf '\n'
+    } >> "$out"
+  done < "$rows"
+  # Same size discipline as symbol-consumers.md: cap, note the cut.
+  if [ "$(wc -l < "$out" | tr -d ' ')" -gt 500 ]; then
+    head -500 "$out" > "$out.tmp" && mv "$out.tmp" "$out"
+    printf '\n[evidence truncated at 500 lines]\n' >> "$out"
+  fi
+  sanitize_text "$out"
+}
+
+rm -f "$SCRATCH/evidence.md"
+if [ "$HAS_CANDIDATES" = "1" ] && [ "${OPENREVIEW_EVIDENCE:-1}" = "1" ]; then
+  build_evidence || warn "evidence extraction failed — verify runs without evidence.md"
+  if [ -s "$SCRATCH/evidence.md" ]; then
+    info "evidence packs built ($(grep -c '^## FINDING' "$SCRATCH/evidence.md") findings)"
+  fi
+fi
+
+EVIDENCE_CONTEXT=""
+if [ -s "$SCRATCH/evidence.md" ]; then
+  EVIDENCE_CONTEXT="Also read $S/evidence.md — deterministic code extracts for each candidate (the real lines around its loc, plus repo sites mentioning identifiers the finding names), taken programmatically from the tree. Judge each claim against these extracts FIRST — they are ground truth; open files only for what they do not show."
+fi
+
 # --- PASS 2: VERIFY (only when there are candidates) -------------------------
 if [ "$HAS_CANDIDATES" = "1" ]; then
   info "pass 2/2 — verify (model: $OR_VERIFY_MODEL)"
@@ -172,6 +257,7 @@ if [ "$HAS_CANDIDATES" = "1" ]; then
 
 IMPORTANT: your read/write tools are sandboxed to the project directory — use relative paths only, never /tmp.
 Read $S/pr-numbered.diff and $S/review-candidates.md with your read tool. Open changed files for context when a claim needs it. Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself.
+$EVIDENCE_CONTEXT
 
 $VERIFY_PROMPT
 
