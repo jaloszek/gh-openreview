@@ -1830,6 +1830,107 @@ dirty-tree refusal; missing-branch refusal; starting branch restored.
 
 ---
 
+# Wave 6 — mechanisms ported from pr-af analysis (specced + implemented 2026-07-21)
+
+Provenance: a code-level analysis of Agent-Field/pr-af (#1 open-source on
+Martian Code-Review-Bench). Most of its architecture (multi-agent lenses,
+compound synthesis, merge gate, 35–50 min runs) is out of scope for this
+action; these five tasks port the mechanisms that survive translation to
+the two-pass design. Its post-worthiness gate measurements (F1 0.38→0.48
+at recall 0.69→0.52) independently validate our kill-list-over-gate
+choice. Notable gap on their side: no incremental review, no comment
+dedup/pruning at all.
+
+## TASK-50 — Generate pass: failure-scenario proof + confidence rubric
+
+**Files:** `prompts/generate.txt` only.
+**Motivation:** pr-af's reviewer prompt Gate 1/Gate 3 — its strongest
+precision lever. Our kill-list bans speculation *negatively*; this adds
+the positive obligation: an 'important' finding must state the concrete
+trigger scenario (which input/state reaches the line, what goes wrong),
+and `conf` gets pinned definitions (high = traced and confirmed against
+real code; med = one unverified assumption; low = diff-only plausible) so
+render.sh's confidence gate and low→nit demotion act on calibrated input
+instead of vibes.
+
+**Acceptance:** eval gate — clean/quiet stay clean, playground and hard
+recall not lower than the wave-5 baseline (playground 11/12 k=3,
+hard 6/7 k=3).
+
+## TASK-51 — Generate pass: cross-location obligations walk (eval-gated, TASK-39 successor)
+
+**Files:** `prompts/generate.txt` only.
+**Motivation:** pr-af's "consistency-verify" phase — its most distinctive
+recall mechanism: enumerate the cross-location reliances a diff creates
+(key written here = key read there; callers satisfy a new precondition;
+produced value still parsed the same where consumed), then read the other
+end and check. pr-af spawns one agent per obligation; here it is a prompt
+walk mirroring the semantic-traps walk. **Risk:** TASK-39's
+adjacent-scan nudge failed its gate with attention dilution (main recall
+6/7→5/7). This differs by demanding *derived-from-this-diff* obligations
+rather than a remembered checklist, but the same failure mode applies —
+revert THIS paragraph alone if the gate fails, keeping TASK-50/52.
+
+**Acceptance:** same gate as TASK-50; watch hard `recall_adjacent`
+(baseline 0/3) for upside and main recall for dilution.
+
+## TASK-52 — Verify pass: reachability + literal-semantics drop criteria
+
+**Files:** `prompts/verify.txt` only.
+**Motivation:** pr-af's evidence-verifier/adversary protocol. Two new
+drops: (a) claim mischaracterizes what the code LITERALLY does (its
+example: "claims string comparison where the code calls errors.Is()");
+(b) the failure is unreachable — an upstream guard/validator/type
+constraint already prevents the described scenario. Plus: an 'important'
+whose body cannot state a concrete trigger scenario is demoted or
+dropped. Unlike TASK-38 (mechanism REWRITING — failed neutral, reverted),
+these are keep/drop criteria, verify's proven competence.
+
+**Acceptance:** same eval gate; precision not lower on playground/hard.
+
+## TASK-53 — render.sh: severity/confidence alias coercion
+
+**Files:** `lib/render.sh` only (both awk parse sites).
+**Motivation:** pr-af made severity normalization a first-class contract
+after a model emitting "high" silently swallowed a whole review. Our
+parser had the same latent bug milder: `sev: critical` ranked (and was
+printed in the machine TSV) as a nit. Coerce
+critical/blocker/major/high/error → important, catch-all → nit,
+medium → med, before the demotion/rank logic; carried-findings parse gets
+the same catch-all.
+
+**Acceptance:** canned render run: `sev: critical`+`conf: medium` renders
+🟠 important with canonical TSV row; `sev: suggestion` renders nit;
+canonical records byte-identical. `shellcheck -S warning lib/render.sh`
+clean. Deterministic — no LLM gate.
+
+## TASK-54 — Evidence packs: deterministic ground truth for verify
+
+**Files:** `lib/passes.sh` (new `build_evidence` between the passes),
+verify prompt context line.
+**Motivation:** pr-af's `evidence.py` — the mechanism behind its
+false-positive claims — is NOT AST magic, it is deterministic grep:
+per finding, code around the loc + call sites of identifiers the finding
+names, fed to the verifier as extracted ground truth. This is also
+exactly the TASK-39 post-mortem's requested direction ("deterministic
+gather-side feed instead of a prompt nudge") and advances backlog item N.
+Implementation: mine backticked identifiers from title+body (≥3 chars,
+`()` stripped, deduped, ≤4/finding), emit `evidence.md` with ±20
+numbered lines around each loc from the real tree + `grep -rnwF` hits
+(≤8 lines each, vendor/scratch dirs excluded, ≤12 findings, 500-line cap,
+`sanitize_text`'d). Plain `grep` not `git grep` so eval fixture trees
+(not git repos) work. Best-effort: any failure ⇒ no evidence.md, verify
+unchanged. Kill switch `OPENREVIEW_EVIDENCE=0`. No new prompt file — the
+context line is dynamic, and `build_evidence` lives in `passes.sh` so
+`engine_fingerprint` covers it.
+
+**Acceptance:** canned tree test: a cross-file key-mismatch finding
+naming `CACHE_PREFIX` yields an evidence.md containing both the flagged
+lines and the other end's definition. `shellcheck -S warning
+lib/passes.sh` clean. Eval gate shared with TASK-50/51/52.
+
+---
+
 ## Explicitly NOT ready for handoff (needs decisions or deeper design)
 
 - **T (cheap triage)** — routing thresholds + prompt design tuning; now
