@@ -219,6 +219,36 @@ Wave 5 (same evening, all four shipped — deterministic, no LLM gates):
   3.2 + `set -u` folds a multibyte char following `$var` into the
   variable name — brace-wrap before Unicode in log strings.
 
+Wave 6 (2026-07-21, all five shipped — pr-af mechanism ports, eval gate
+PASSED on the free flash tier, k=3 hard / k=1 rest):
+- **TASK-50** — generate: failure-scenario proof for importants +
+  pinned conf rubric (pr-af reviewer Gates 1/3).
+- **TASK-51** — generate: cross-location obligations walk (pr-af
+  consistency-verify as a prompt walk; TASK-39 successor). No attention
+  dilution this time: hard held 6/7, playground held 11/12. Offline
+  adjacent stayed 0/3, as the TASK-39 post-mortem predicts for fixtures.
+- **TASK-52** — verify: literal-semantics + upstream-guard-reachability
+  drop criteria (pr-af verifier/adversary protocol; keep/drop only, NOT
+  TASK-38's failed rewrite approach).
+- **TASK-53** — render.sh coerces sev/conf aliases (critical→important,
+  medium→med, catch-all→nit) at both parse sites; a `sev: critical` no
+  longer silently ranks as a nit.
+- **TASK-54** — deterministic per-finding evidence packs
+  (`build_evidence` in passes.sh → `evidence.md` → verify context): code
+  around each loc + `grep -rnwF` sites of backticked identifiers. This is
+  the TASK-39 post-mortem's "deterministic feed" direction and advances
+  item N. Kill switch `OPENREVIEW_EVIDENCE=0`.
+- Gate numbers: clean 0 findings, quiet 0/0, playground recall 11/12
+  precision **11/11=1.00** (k=1; baseline 0.85), hard recall 6/7 deep 3/6
+  adjacent 0/3 precision 0.83 (k=3; baseline 0.84) — all holds, precision
+  direction positive.
+- Deliberately NOT ported from pr-af: post-worthiness gate (their own
+  measurement: F1 0.38→0.48 at recall 0.69→0.52 — validates our
+  kill-list choice), numeric score multipliers (item M already dropped),
+  merge gate (we are COMMENT-only), compound synthesis (needs many
+  surviving findings), multi-lens orchestration (35–50 min, ~$2/review).
+  pr-af has NO incremental review or comment dedup — we lead there.
+
 ### Re-baseline after full-project trees (2026-07-06, free flash tier)
 
 TASK-42 done: every fixture's `tree/` is now the complete post-PR project
