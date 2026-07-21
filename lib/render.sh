@@ -68,6 +68,12 @@ PRDESC="$SCRATCH/.prdesc.md"
 awk -v prdesc="$PRDESC" '
   function flush() {
     if (have) {
+      # Defensive: models sometimes emit non-canonical labels; coerce known
+      # aliases so a "critical" is not silently down-ranked to nit and a
+      # "medium" confidence is not treated as low (TASK-53).
+      if (sev=="critical" || sev=="blocker" || sev=="major" || sev=="high" || sev=="error") sev = "important"
+      if (sev != "important") sev = "nit"
+      if (conf == "medium") conf = "med"
       # Defensive: unknown/missing conf is treated as low.
       if (conf != "high" && conf != "med" && conf != "low") conf = "low"
       orig_sev = sev
@@ -257,6 +263,8 @@ if [ -s "$PREV_TSV" ]; then
       }
       {
         sev=tolower($1); conf=tolower($2); path=$3; line=$4; title=$6; body=$7
+        if (sev!="important") sev="nit"
+        if (conf=="medium") conf="med"
         if (conf!="high" && conf!="med" && conf!="low") conf="low"
         orig_sev=sev
         if (conf=="low" && sev=="important") sev="nit"
