@@ -133,4 +133,6 @@ before touching trigger logic.
 /`OPENREVIEW_VERIFY_MODEL`, `MARKER`/`MARKER_MATCH` (comment dedup header/token),
 `BOT_LOGIN` (whose stale comments `post.sh` prunes), `OPENREVIEW_DIFF_EXCLUDE`
 /`OPENREVIEW_DIFF_MAX_LINES` (diff trimming), `OPENREVIEW_PASS_TIMEOUT`
-(per-pass seconds), `OPENREVIEW_AUTH_CMD` (runs before opencode to mint creds).
+(per-pass seconds), `OPENREVIEW_AUTH_CMD` (runs before opencode to mint creds),
+`OPENREVIEW_EVIDENCE` (0 disables the deterministic per-finding evidence packs
+fed to the verify pass).
