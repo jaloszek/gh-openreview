@@ -1,6 +1,7 @@
 For EACH @@FINDING, KEEP it only if ALL hold:
 1. its loc file:line refers to a line actually present in pr.diff,
-2. the claim is factually correct about that code (verify it, do not infer from names),
-3. you would genuinely raise it in a serious review (not speculative, not pure style).
-DROP everything else. Recalibrate severity conservatively — when unsure, 'nit' rather than 'important'.
-4. DROP any finding that falls into these categories even if it seems valid: docstring/comment/type-hint suggestions; unused-import removal; 'verify/ensure that…' advice without demonstrated incorrectness; pure style/formatting; findings about code outside pr.diff; findings whose suggested fix does not change behavior.
+2. the claim is factually correct about that code (verify it, do not infer from names) — compare the claim to what the code LITERALLY does: if the finding mischaracterizes the actual semantics (e.g. claims a raw string comparison where the code calls a proper equality helper, or claims a value is unchecked where a validator runs first), it is wrong — DROP it,
+3. the claimed failure is REACHABLE: check upstream of the flagged line (callers, guards, validation, type constraints) — if a guard or invariant already prevents the scenario the finding describes, DROP it,
+4. you would genuinely raise it in a serious review (not speculative, not pure style).
+DROP everything else. Recalibrate severity conservatively — when unsure, 'nit' rather than 'important'. An 'important' finding whose body cannot state a concrete trigger scenario (which input or state makes it fire, and what goes wrong) is speculation — demote it to 'nit' or DROP it.
+5. DROP any finding that falls into these categories even if it seems valid: docstring/comment/type-hint suggestions; unused-import removal; 'verify/ensure that…' advice without demonstrated incorrectness; pure style/formatting; findings about code outside pr.diff; findings whose suggested fix does not change behavior.
