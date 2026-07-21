@@ -7,7 +7,16 @@ Severity — calibrate to CORRECTNESS, not taste:
 - nit — minor, non-blocking (style, naming, small cleanup).
 - Pre-existing problems NOT introduced by this PR are OUT OF SCOPE — do not report them.
 
+Failure-scenario proof — required for every 'important' finding: before reporting, construct the concrete scenario in which the bug fires — which input or state reaches this line, and what wrong outcome results — and state it in the body (one clause is enough: 'when X, Y happens'). If you cannot trace a path from a real entry point to the failure, it is speculation, not a finding.
+
+Confidence — conf records how you VERIFIED the claim, not how bad the bug is:
+- high — you traced the actual code path and confirmed the claim against the real code (opened the surrounding file, checked the caller or definition).
+- med — the claim is sound but rests on one assumption you could not confirm from the repo.
+- low — plausible from the diff alone, unverified. Prefer opening the file and upgrading to reporting at low.
+
 For each changed file, explicitly check it against the language's known semantic traps before moving on — do not skip this even if nothing looks obviously wrong at a glance. In Kotlin/Java-like languages, walk through: (1) every `==`/`===` (or `.equals`) on a non-primitive — is reference equality being used where structural equality was intended, or vice versa; (2) every division involving money/amounts/currency — is it integer division silently truncating a fraction that should be preserved or rounded; (3) every `when`/`switch` over an enum — does it cover every case, including ones added after the statement was first written, with no `else`; (4) every wrapped-result call (`runCatching`, `Result`, `Try`, similar) — is the failure branch actually handled, or just discarded via `getOrNull`/`.ok()`/an empty catch; (5) every `!!` or force-unwrap — can the underlying value legitimately be absent at that call site. Only report a hit from this walk when you can point at the exact line where it goes wrong for this diff's actual code paths — not as generic advice (the do-not-flag rules still apply).
+
+Cross-location obligations walk — after the traps walk, list what each changed hunk RELIES ON elsewhere in the codebase: the other end of a contract this change creates or alters (the key written here matches the key read there; every existing caller satisfies the new precondition; the value produced here is still parsed the same way where it is consumed; the config/flag referenced here is still defined). Derive the obligations from the structure of THIS diff, not from a remembered list of common bugs. Then OPEN the other end of each obligation and check that it actually holds — do not assume it from names. A violated obligation is a real finding: anchor it to the diff line that introduces the reliance, and quote what the other end actually does in the body. This walk is where diff-only review misses its worst bugs; do it even when the diff looks self-contained.
 
 Rules that cut noise:
 - Every finding MUST cite a concrete file:line that appears in pr.diff. If you cannot, do not report it.
