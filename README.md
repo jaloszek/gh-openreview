@@ -72,6 +72,7 @@ See [`examples/`](examples/) for Bedrock-via-OIDC and self-hosted-runner variant
 | `trigger-label` | `opencode-review` | Label whose addition triggers a review. |
 | `marker-header` | `## 🤖 OpenCode Review` | First line of the posted comment; used for dedup. |
 | `bot-login` | `github-actions[bot]` | Comment author whose stale reviews are pruned. |
+| `docs-check` | `true` | Advisory cheap-tier pass rating the comments/docstrings/doc prose the PR **adds** — readability, durability (no ticket-/date-/review-bound context that rots), pragmatism (why over what). Notes render as a collapsed 📚 section and never block; the pass is skipped when the diff adds no comment/doc lines. |
 | `min-confidence` | `low` | Minimum confidence (`low`/`med`/`high`) a finding must have to be rendered. Below-threshold findings are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting. |
 | `update-ping` | `false` | When `true`, editing an existing sticky comment with ≥1 important finding also posts a short unmarked ping comment; pruned on the next run. |
 | `comment-style` | `summary` | `summary` posts only the sticky summary comment. `both` additionally posts a COMMENT-event review with inline comments for anchored important findings; the summary comment always carries every finding regardless of this setting (inline posting is best-effort — a failed inline POST is logged and never fails the run). |
@@ -94,6 +95,7 @@ The action exposes per-run metrics (also written to the job's step summary):
 | `findings-total` | Rendered findings (important + nits). |
 | `findings-important` | 🔴 important findings. |
 | `findings-nit` | 🟡 nit findings. |
+| `docs-notes` | 📚 comments-&-docs quality notes (advisory docs pass). |
 | `diff-lines` | Reviewed diff size after exclude/truncation. |
 | `duration-seconds` | Total LLM time across the passes. |
 
@@ -102,12 +104,19 @@ The action exposes per-run metrics (also written to the job's step summary):
 Two LLM passes plus a deterministic render:
 
 1. **Generate** — hunt for issues by class; every finding must cite a `file:line`
-   that appears in the diff.
+   that appears in the diff. 🔴 `important` is reserved for this-PR bugs with a
+   proven failure scenario; 🟡 `nit` is the improvement channel — the pass
+   surfaces the 2-3 most valuable concrete improvements (simplification,
+   edge-case hardening, test gaps for changed logic) even when nothing is
+   blocking, while a truly trivial diff may still yield an empty review.
 2. **Verify** — ground each candidate against the diff and drop the inferential
-   ones (skipped when the first pass found nothing).
+   ones (skipped when the first pass found nothing). Importants must prove a
+   trigger scenario; improvement nits are kept on usefulness.
 3. **Render** — a deterministic step builds the final comment (🔴 important /
-   🟡 nit; pre-existing issues are never shown), guarantees the marker header,
-   posts one summary comment, and prunes stale ones so only the latest remains.
+   🟡 nit; pre-existing issues are never shown, plus an always-present 🔎
+   one-line reviewer summary of what the PR does and where its risk lives),
+   guarantees the marker header, posts one summary comment, and prunes stale
+   ones so only the latest remains.
 
 Before the passes run, a token-scoped step gathers the PR context into a scratch
 directory: the diff (with generated/vendored files excluded and a size cap), the

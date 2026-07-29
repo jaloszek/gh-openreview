@@ -62,6 +62,10 @@ inputs:
     description: "Comment author whose stale reviews are pruned."
     required: false
     default: "github-actions[bot]"
+  docs-check:
+    description: "When true (default), an advisory cheap-tier pass rates the comments/docstrings/doc prose the PR adds (readability, durability, pragmatism) and renders the notes as a collapsed 'Comments & docs' section. Never blocks; skipped automatically when the diff adds no comment/doc lines. Set false to disable."
+    required: false
+    default: "true"
   min-confidence:
     description: "Minimum confidence (low|med|high) a finding must have to be rendered in the comment. Findings below the threshold are dropped and counted separately; low-confidence findings are always demoted from important to nit regardless of this setting."
     required: false
@@ -101,6 +105,9 @@ outputs:
   findings-nit:
     description: "Number of 🟡 nit findings."
     value: ${{ steps.metrics.outputs.findings-nit }}
+  docs-notes:
+    description: "Number of 📚 comments-&-docs quality notes rendered (advisory docs pass)."
+    value: ${{ steps.metrics.outputs.docs-notes }}
   diff-lines:
     description: "Reviewed diff size in lines (after exclude/truncation)."
     value: ${{ steps.metrics.outputs.diff-lines }}
@@ -291,6 +298,7 @@ runs:
         OPENCODE_API_KEY: ${{ inputs.opencode-api-key }}
         OPENCODE_CONFIG: ${{ inputs.opencode-config }}
         OPENREVIEW_TRUST_REPO_CONFIG: ${{ inputs.trust-repo-config }}
+        OPENREVIEW_DOCS_CHECK: ${{ inputs.docs-check }}
       run: ${{ github.action_path }}/../lib/passes.sh
 
     # Deterministic render — no model call, no token. Builds the final comment
