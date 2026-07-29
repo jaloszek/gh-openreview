@@ -8,6 +8,7 @@ body: one to three sentences on a SINGLE line — the reason grounded in the dif
 Repeat @@FINDING blocks for each finding. If there are NO findings, write no @@FINDING blocks at all.
 Then ALWAYS end the file with exactly:
 @@PRDESC
+summary: one sentence on a single line, addressed to the PR author — what this PR does and where its real risk lives (the riskiest part of the diff and what you checked there). ALWAYS include this line, especially when there are no findings.
 rating: good | could-be-improved | poor
 reason: one short line explaining the rating (omit this line when rating is good)
 

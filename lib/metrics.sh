@@ -11,22 +11,23 @@ set -uo pipefail
 METRICS="$SCRATCH/metrics.env"
 
 # Defaults so a partial run still reports something sane.
-DIFF_LINES=0 PREP_SECS=0 PASS1_SECS=0 PASS2_SECS=0
+DIFF_LINES=0 PREP_SECS=0 PASS1_SECS=0 PASS2_SECS=0 DOCS_SECS=0
 OR_MODEL="" OR_VERIFY_MODEL="" OR_CHEAP_MODEL=""
 OR_FINDINGS_IMPORTANT=0 OR_FINDINGS_NIT=0 OR_FINDINGS_TOTAL=0 FINDINGS_SUPPRESSED=0
-FINDINGS_CARRIED=0 FINDINGS_RESOLVED=0
+FINDINGS_CARRIED=0 FINDINGS_RESOLVED=0 OR_DOCS_NOTES=0
 PREP_COST="" PREP_TOKENS_IN="" PREP_TOKENS_OUT="" PREP_CACHE_READ=""
 PASS1_COST="" PASS1_TOKENS_IN="" PASS1_TOKENS_OUT="" PASS1_CACHE_READ=""
 PASS2_COST="" PASS2_TOKENS_IN="" PASS2_TOKENS_OUT="" PASS2_CACHE_READ=""
+DOCS_COST="" DOCS_TOKENS_IN="" DOCS_TOKENS_OUT="" DOCS_CACHE_READ=""
 # shellcheck disable=SC1090
 [ -f "$METRICS" ] && . "$METRICS"
 
-total_secs=$(( PREP_SECS + PASS1_SECS + PASS2_SECS ))
+total_secs=$(( PREP_SECS + PASS1_SECS + PASS2_SECS + DOCS_SECS ))
 
 # Sum whatever cost figures we have (missing ones just contribute 0); awk
 # avoids a bc/bash-float dependency for the fractional-USD addition.
-total_cost=$(awk -v a="${PREP_COST:-0}" -v b="${PASS1_COST:-0}" -v c="${PASS2_COST:-0}" \
-  'BEGIN { printf "%.4f", (a==""?0:a) + (b==""?0:b) + (c==""?0:c) }')
+total_cost=$(awk -v a="${PREP_COST:-0}" -v b="${PASS1_COST:-0}" -v c="${PASS2_COST:-0}" -v d="${DOCS_COST:-0}" \
+  'BEGIN { printf "%.4f", (a==""?0:a) + (b==""?0:b) + (c==""?0:c) + (d==""?0:d) }')
 
 # Action outputs (consumed via steps.<id>.outputs.* in action.yml).
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -34,6 +35,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "findings-total=$OR_FINDINGS_TOTAL"
     echo "findings-important=$OR_FINDINGS_IMPORTANT"
     echo "findings-nit=$OR_FINDINGS_NIT"
+    echo "docs-notes=$OR_DOCS_NOTES"
     echo "diff-lines=$DIFF_LINES"
     echo "duration-seconds=$total_secs"
     echo "total-cost=$total_cost"
@@ -63,6 +65,9 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     fi
     echo "| Generate pass | ${PASS1_SECS}s ($OR_MODEL) · \$${PASS1_COST:-?} · ${PASS1_TOKENS_IN:-?}in/${PASS1_TOKENS_OUT:-?}out tok (${PASS1_CACHE_READ:-0} cached) |"
     echo "| Verify pass | ${PASS2_SECS}s ($OR_VERIFY_MODEL) · \$${PASS2_COST:-?} · ${PASS2_TOKENS_IN:-?}in/${PASS2_TOKENS_OUT:-?}out tok (${PASS2_CACHE_READ:-0} cached) |"
+    if [ "$DOCS_SECS" -gt 0 ] || [ "$OR_DOCS_NOTES" -gt 0 ]; then
+      echo "| Docs pass | ${DOCS_SECS}s · $OR_DOCS_NOTES notes · \$${DOCS_COST:-?} · ${DOCS_TOKENS_IN:-?}in/${DOCS_TOKENS_OUT:-?}out tok (${DOCS_CACHE_READ:-0} cached) |"
+    fi
     echo "| Total LLM time | ${total_secs}s |"
     echo "| Total cost | \$$total_cost |"
   } >> "$GITHUB_STEP_SUMMARY"

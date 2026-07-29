@@ -394,8 +394,40 @@ defang_file "$TSV"
 defang_file "$TSV.suppressed"
 defang_file "$PRDESC"
 
+# Docs-quality notes (advisory pass, passes.sh): parse @@DOCNOTE records into
+# a loc/title/body TSV. File absent (pass disabled, skipped, or failed) or
+# empty -> n_docs=0 and the section simply isn't rendered. Cap at 5 defensively
+# even though the prompt already asks for at most 5.
+DOCSTSV="$SCRATCH/.docsnotes.tsv"
+: > "$DOCSTSV"
+if [ -s "$SCRATCH/docs-notes.md" ]; then
+  awk '
+    function flush() {
+      if (have && title != "" && body != "") {
+        gsub(/\t/, " ", loc); gsub(/\t/, " ", title); gsub(/\t/, " ", body)
+        printf "%s\t%s\t%s\n", loc, title, body
+      }
+      have=0; loc=""; title=""; body=""
+    }
+    /^@@DOCNOTE[[:space:]]*$/ { flush(); have=1; next }
+    have {
+      if      ($0 ~ /^loc:/)   { sub(/^loc:[[:space:]]*/,"");   loc=$0 }
+      else if ($0 ~ /^title:/) { sub(/^title:[[:space:]]*/,""); title=$0 }
+      else if ($0 ~ /^body:/)  { sub(/^body:[[:space:]]*/,"");  body=$0 }
+      else if (body != "")     { body = body " " $0 }
+    }
+    END { flush() }
+  ' "$SCRATCH/docs-notes.md" | head -5 > "$DOCSTSV"
+fi
+defang_file "$DOCSTSV"
+n_docs=$(wc -l < "$DOCSTSV" | tr -d ' ')
+
 # Parse the rating/reason trailer defensively: unknown/missing rating -> "good"
-# (render nothing). Only the first "rating:"/"reason:" lines are honored.
+# (render nothing). Only the first "summary:"/"rating:"/"reason:" lines are
+# honored. The summary is the reviewer's one-line what-was-checked note —
+# rendered whenever present so even a zero-finding review shows engagement;
+# a model that omits it simply renders nothing extra.
+PRDESC_SUMMARY=$(awk 'tolower($0) ~ /^summary:/ { sub(/^[^:]*: */, ""); print; exit }' "$PRDESC")
 PRDESC_RATING=$(awk -F': *' 'tolower($0) ~ /^rating:/ { print tolower($2); exit }' "$PRDESC" | tr -d '[:space:]')
 PRDESC_REASON=$(awk -F': *' 'tolower($0) ~ /^reason:/ { sub(/^[^:]*: */, ""); print; exit }' "$PRDESC")
 case "$PRDESC_RATING" in
@@ -415,11 +447,19 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     printf '%s\n\n' "$MARKER"
     if [ "$n_resolved" -gt 0 ]; then
       printf '✅ No blocking issues found in this diff · %d resolved since last review.\n\n' "$n_resolved"
+      # Reviewer summary (from @@PRDESC): what the PR does and where its risk
+      # lives — it is what separates "no issues found" from "didn't look".
+      if [ -n "$PRDESC_SUMMARY" ]; then
+        printf '> 🔎 %s\n\n' "$PRDESC_SUMMARY"
+      fi
       printf '<details><summary>✅ Resolved since last review (%d)</summary>\n\n' "$n_resolved"
       awk -F'\t' '{ printf "- ~~%s~~ · `%s:%s`\n", $6, $3, $4 }' "$RESOLVED"
       printf '\n</details>\n\n'
     else
       printf '✅ No blocking issues found in this diff.\n\n'
+      if [ -n "$PRDESC_SUMMARY" ]; then
+        printf '> 🔎 %s\n\n' "$PRDESC_SUMMARY"
+      fi
     fi
   else
     # Tally lives IN the header line — one-glance verdict (the field's
@@ -435,6 +475,11 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
       parts="$parts · $n_resolved resolved since last review"
     fi
     printf '%s — %s\n\n' "$MARKER" "$parts"
+
+    # Reviewer summary reads as the intro line, above the findings list.
+    if [ -n "$PRDESC_SUMMARY" ]; then
+      printf '> 🔎 %s\n\n' "$PRDESC_SUMMARY"
+    fi
 
     # flat priority list: 🔴 high-conf important, 🟠 med/low-conf important
     # (rare — low-conf importants are demoted to nit above), 🟡 nit. Order is
@@ -494,6 +539,14 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     printf '</details>\n\n'
   fi
 
+  # Comments-&-docs notes (advisory): collapsed so they never crowd findings.
+  if [ "$n_docs" -gt 0 ]; then
+    note_word=$([ "$n_docs" -eq 1 ] && echo note || echo notes)
+    printf '<details><summary>📚 Comments & docs (%d %s)</summary>\n\n' "$n_docs" "$note_word"
+    awk -F'\t' '{ printf "- **%s** · `%s` — %s\n", $2, $1, $3 }' "$DOCSTSV"
+    printf '\n</details>\n\n'
+  fi
+
   # PR-description rating: render one line only when it's not "good".
   if [ "$PRDESC_RATING" != "good" ]; then
     printf '> 📝 PR description: **%s** — %s\n' "$PRDESC_RATING" "$PRDESC_REASON"
@@ -520,13 +573,14 @@ awk -F'\t' -v OFS='\t' -v cap="$NIT_CAP" '
 
 rm -f "$CARRIED" "$RESOLVED"
 
-ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits, ${n_suppressed} suppressed, ${n_carried} carried, ${n_resolved} resolved)"
+ok "review rendered ($(wc -l < "$OUT" | tr -d ' ') lines; ${n_important} important, ${n_nit} nits, ${n_docs} doc notes, ${n_suppressed} suppressed, ${n_carried} carried, ${n_resolved} resolved)"
 
 # Record finding counts for telemetry (metrics.sh -> step summary + outputs).
 {
   echo "OR_FINDINGS_IMPORTANT=$n_important"
   echo "OR_FINDINGS_NIT=$n_nit"
   echo "OR_FINDINGS_TOTAL=$n_total"
+  echo "OR_DOCS_NOTES=$n_docs"
   echo "FINDINGS_SUPPRESSED=$n_suppressed"
   echo "FINDINGS_UNANCHORED=${n_unanchored:-0}"
   echo "FINDINGS_CARRIED=$n_carried"

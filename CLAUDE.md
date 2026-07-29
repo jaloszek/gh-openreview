@@ -65,6 +65,13 @@ Two opencode passes writing intermediate files into `$SCRATCH`:
 1. **generate** → `review-candidates.md`
 2. **verify** (skipped when pass 1 found nothing) → `review-verified.md`
 
+Plus an optional advisory **docs pass** (cheap tier, `OPENREVIEW_DOCS_CHECK`,
+default on) → `docs-notes.md` (`@@DOCNOTE` records): rates the
+comments/docstrings/doc prose the PR *adds* for readability, durability, and
+pragmatism. It runs outside generate/verify on purpose — those prompts ban doc
+suggestions to keep the bug channel quiet — never blocks, is skipped when the
+diff adds no comment/doc lines, and renders as a collapsed 📚 section.
+
 There is **no LLM format pass** — `render.sh` parses the verified findings and
 builds `opencode-review.md` deterministically (free, fixed output shape).
 
@@ -85,10 +92,19 @@ conf: high|med|low
 title: one short line
 body: one-to-three sentences on a single line
 @@PRDESC
-<freeform suggested PR title/body to end of file>
+summary: one line — what the PR does + its riskiest area (always rendered as a 🔎 quote)
+rating: good | could-be-improved | poor
+reason: one short line (omitted when rating is good)
 ```
 
-No `@@FINDING` blocks ⇒ no findings (render emits "✅ No blocking issues").
+Severity semantics: `important` is strictly a this-PR bug with a proven failure
+scenario; `nit` is the improvement channel (simplification, edge-case
+hardening, test gap for changed logic) — the generate prompt asks for the 2-3
+most valuable improvements even on a clean diff, while an empty review stays
+legitimate for truly trivial changes.
+
+No `@@FINDING` blocks ⇒ no findings (render emits "✅ No blocking issues" plus
+the summary line).
 `render.sh` selects all important findings + the top `OPENREVIEW_NIT_CAP` (3)
 nits, sorted by severity then confidence with an `NR` tie-breaker for stable
 ordering.
@@ -135,4 +151,5 @@ before touching trigger logic.
 /`OPENREVIEW_DIFF_MAX_LINES` (diff trimming), `OPENREVIEW_PASS_TIMEOUT`
 (per-pass seconds), `OPENREVIEW_AUTH_CMD` (runs before opencode to mint creds),
 `OPENREVIEW_EVIDENCE` (0 disables the deterministic per-finding evidence packs
-fed to the verify pass).
+fed to the verify pass), `OPENREVIEW_DOCS_CHECK` (0/false disables the advisory
+comments-&-docs quality pass).

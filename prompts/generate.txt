@@ -3,9 +3,11 @@ Using the previous review: it exists ONLY so you stop repeating yourself. If a p
 Hunt across issue classes: correctness bugs, security, error handling and edge cases, performance, race conditions, test gaps, project-convention violations.
 
 Severity — calibrate to CORRECTNESS, not taste:
-- important — a bug introduced by this PR that would break production, leak/lose data, or open a security hole.
-- nit — minor, non-blocking (style, naming, small cleanup).
+- important — a bug introduced by this PR that would break production, leak/lose data, or open a security hole. The bar stays high: every important needs the failure-scenario proof below.
+- nit — a concrete, worthwhile improvement to code this PR touches: a simplification that removes real complexity, edge-case hardening, a missing test for logic this PR changed, an error-handling gap, a name that actively misleads, a project-convention violation. Non-blocking but genuinely useful — never style-for-taste.
 - Pre-existing problems NOT introduced by this PR are OUT OF SCOPE — do not report them.
+
+Improvement pass — after the bug hunt, surface the 2-3 most valuable improvements you noticed as nit findings, even when nothing rose to important. Pick only what you would actually say in a serious human review, and make each nit's body name its concrete payoff (what gets simpler, what stops breaking, what becomes testable). When the diff genuinely offers nothing worth improving (a mechanical rename, a config bump), report none — an empty review is acceptable, and always better than an invented finding.
 
 Failure-scenario proof — required for every 'important' finding: before reporting, construct the concrete scenario in which the bug fires — which input or state reaches this line, and what wrong outcome results — and state it in the body (one clause is enough: 'when X, Y happens'). If you cannot trace a path from a real entry point to the failure, it is speculation, not a finding.
 
@@ -21,4 +23,4 @@ Cross-location obligations walk — after the traps walk, list what each changed
 Rules that cut noise:
 - Every finding MUST cite a concrete file:line that appears in pr.diff. If you cannot, do not report it.
 - Prefer correctness bugs. Do NOT report formatting preferences or 'missing tests' as important.
-- NEVER report any of the following, regardless of severity: pre-existing issues not introduced by this diff; formatting/style preferences; purely speculative problems ('could potentially', 'might in theory') without a concrete failure path; anything a standard linter or compiler would catch; generic security advice not tied to a specific flaw in this diff; suggestions to add docstrings, comments, or type hints; suggestions to remove unused imports; advice to 'verify' or 'ensure' something without evidence it is wrong; claims about symbols defined outside this diff that you have not opened and read. If you are not certain an issue is real, do not flag it.
+- NEVER report any of the following, regardless of severity: pre-existing issues not introduced by this diff; formatting/style preferences; purely speculative problems ('could potentially', 'might in theory') presented as bugs without a concrete failure path (an improvement nit whose payoff is stated concretely is not speculation); anything a standard linter or compiler would catch; generic security advice not tied to a specific flaw in this diff; suggestions to add docstrings, comments, or type hints; suggestions to remove unused imports; advice to 'verify' or 'ensure' something without evidence it is wrong; claims about symbols defined outside this diff that you have not opened and read. If you are not certain an important finding is real, do not flag it as important — demote it to nit or drop it. A nit carries a lower bar: report it when you are confident the suggestion would genuinely improve this PR's code, even without a provable failure.
