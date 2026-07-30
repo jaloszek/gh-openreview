@@ -43,6 +43,72 @@ METRICS="$SCRATCH/metrics.env"
   echo "PASS2_SECS=0"
 } >> "$METRICS"
 
+# --- DOCS PASS (advisory): comments & docs quality ----------------------------
+# Rates the comments/docstrings/doc prose this PR ADDS against three bars:
+# readable, durable (no ticket-/date-/review-bound context that rots), and
+# pragmatic (why over what). Deliberately OUTSIDE generate/verify — those
+# prompts ban doc suggestions to keep the bug channel quiet. Cheap tier,
+# best-effort, never blocks: a failure just means no docs section in the
+# comment. Disable with OPENREVIEW_DOCS_CHECK=0/false.
+#
+# It depends only on gather.sh output (pr.diff / pr-numbered.diff), so it is
+# LAUNCHED HERE in the background and runs concurrently with prep + generate +
+# verify — off the critical path entirely (it is shorter than generate in
+# every observed run). The main pipeline reaps it before the failure gate at
+# the bottom. Exception: when OPENREVIEW_AUTH_CMD is set, two concurrent
+# oc_run calls would race the credential-minting command, so the pass drops
+# back to running serially after verify.
+docs_pass() {
+  local model="${OR_CHEAP_MODEL:-$OR_MODEL}" _t2=$SECONDS
+  oc_run "$OR_DIR" "$model" "You are reviewing the WRITING a pull request adds — its comments, docstrings, and documentation prose — not the code.
+
+IMPORTANT: your read and write tools are sandboxed to the project directory. ALL scratch files must use relative paths under $S/ (e.g. $S/pr-numbered.diff) — NEVER /tmp or any absolute path, those are rejected.
+
+Read $S/pr-numbered.diff with your read tool. Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself. Open the surrounding file when you need to judge whether a comment matches the code it sits on.
+
+$DOCS_PROMPT
+
+Write the notes in this EXACT record format and nothing else to $S/docs-notes.md with your write tool:
+@@DOCNOTE
+loc: path/to/file.ext:123   (file:line of the added comment — a line present in pr-numbered.diff)
+title: one short line naming the problem
+body: one or two sentences on a SINGLE line — why it fails the bar, plus a concrete tighter rewording (or say: delete it).
+Repeat @@DOCNOTE blocks per note, at most 5. If every added comment/doc meets the bar, write an empty file. Do not post anything. Do not edit or commit tracked files." "docs" \
+    || { warn "docs pass failed — comment renders without docs notes"; rm -f "$SCRATCH/docs-notes.md"; }
+  # metrics.env appends are line-sized writes with O_APPEND — safe alongside
+  # the main pipeline's own appends.
+  echo "DOCS_SECS=$((SECONDS - _t2))" >> "$METRICS"
+  oc_extract_metrics "$SCRATCH/oc-docs.jsonl" "DOCS"
+}
+
+rm -f "$SCRATCH/docs-notes.md"
+DOCS_PID=""
+DOCS_RUN="off"
+case "${OPENREVIEW_DOCS_CHECK:-1}" in
+  0|[Ff]alse|[Nn]o) ;;
+  *)
+    # Gate: only spend a pass when the diff actually adds comment-ish lines or
+    # touches prose/doc files. Loose on purpose — the model does the real triage.
+    doc_re='^\+[[:space:]]*(#|//|/\*|\*|--|;;|<!--|"""|'"'''"')'
+    n_comment_lines=$(grep -cE "$doc_re" "$SCRATCH/pr.diff" 2>/dev/null || true)
+    n_doc_files=$(grep -cE '^\+\+\+ b/.*\.(md|rst|adoc)$' "$SCRATCH/pr.diff" 2>/dev/null || true)
+    if [ "${n_comment_lines:-0}" -gt 0 ] || [ "${n_doc_files:-0}" -gt 0 ]; then
+      if [ -n "${OPENREVIEW_AUTH_CMD:-}" ]; then
+        DOCS_RUN="serial"
+        info "docs pass — deferred to after verify (serial: OPENREVIEW_AUTH_CMD set)"
+      else
+        DOCS_RUN="parallel"
+        info "docs pass — comments & docs quality (model: ${OR_CHEAP_MODEL:-$OR_MODEL}, parallel with generate)"
+        docs_pass &
+        DOCS_PID=$!
+      fi
+    else
+      info "docs pass — skipped (no added comments/docs in diff)"
+    fi
+    ;;
+esac
+
+
 # --- PREP (cheap tier): intent compression ----------------------------------
 # When a cheap model is configured, distil the requirement context (linked
 # issues + PR body + commits) into a short brief so the strong generate pass
@@ -277,54 +343,25 @@ else
   info "pass 2/2 — skipped (no candidates)"
 fi
 
+# Serial-fallback docs pass (see the spawn site above PASS 1): runs here only
+# when OPENREVIEW_AUTH_CMD forced serial mode.
+if [ "$DOCS_RUN" = "serial" ]; then
+  docs_pass
+fi
+
+# Reap the parallel docs pass before the failure gate below: the wait is
+# bounded by the pass timeout, and an abandoned opencode child must never
+# outlive this step (it would keep writing into a scratch dir that persists
+# on self-hosted runners). Its exit status is irrelevant — docs_pass already
+# handled its own failure (warn + no docs-notes.md).
+if [ -n "$DOCS_PID" ]; then
+  wait "$DOCS_PID" 2>/dev/null || true
+fi
+
 # A hard generate failure must abort so the action never posts a comment built
 # from a failed run. The gate above always leaves a non-empty review-verified.md
 # (at least the @@PRDESC line), so an emptiness check would NOT catch this —
 # fail purely on the generate exit status. Verify failures fall back gracefully.
 if [ "$GENERATE_FAILED" = "1" ]; then
   die "review engine failed: generate pass returned non-zero"
-fi
-
-# --- DOCS PASS (advisory): comments & docs quality ----------------------------
-# Rates the comments/docstrings/doc prose this PR ADDS against three bars:
-# readable, durable (no ticket-/date-/review-bound context that rots), and
-# pragmatic (why over what). Deliberately OUTSIDE generate/verify — those
-# prompts ban doc suggestions to keep the bug channel quiet. Cheap tier,
-# best-effort, never blocks: a failure just means no docs section in the
-# comment. Disable with OPENREVIEW_DOCS_CHECK=0/false.
-rm -f "$SCRATCH/docs-notes.md"
-DOCS_ENABLED=1
-case "${OPENREVIEW_DOCS_CHECK:-1}" in
-  0|[Ff]alse|[Nn]o) DOCS_ENABLED=0 ;;
-esac
-if [ "$DOCS_ENABLED" = "1" ]; then
-  # Gate: only spend a pass when the diff actually adds comment-ish lines or
-  # touches prose/doc files. Loose on purpose — the model does the real triage.
-  doc_re='^\+[[:space:]]*(#|//|/\*|\*|--|;;|<!--|"""|'"'''"')'
-  n_comment_lines=$(grep -cE "$doc_re" "$SCRATCH/pr.diff" 2>/dev/null || true)
-  n_doc_files=$(grep -cE '^\+\+\+ b/.*\.(md|rst|adoc)$' "$SCRATCH/pr.diff" 2>/dev/null || true)
-  if [ "${n_comment_lines:-0}" -gt 0 ] || [ "${n_doc_files:-0}" -gt 0 ]; then
-    DOCS_MODEL="${OR_CHEAP_MODEL:-$OR_MODEL}"
-    info "docs pass — comments & docs quality (model: $DOCS_MODEL)"
-    _t2=$SECONDS
-    oc_run "$OR_DIR" "$DOCS_MODEL" "You are reviewing the WRITING a pull request adds — its comments, docstrings, and documentation prose — not the code.
-
-IMPORTANT: your read and write tools are sandboxed to the project directory. ALL scratch files must use relative paths under $S/ (e.g. $S/pr-numbered.diff) — NEVER /tmp or any absolute path, those are rejected.
-
-Read $S/pr-numbered.diff with your read tool. Line numbers are printed at the start of each line — copy them exactly into loc:, never compute line numbers yourself. Open the surrounding file when you need to judge whether a comment matches the code it sits on.
-
-$DOCS_PROMPT
-
-Write the notes in this EXACT record format and nothing else to $S/docs-notes.md with your write tool:
-@@DOCNOTE
-loc: path/to/file.ext:123   (file:line of the added comment — a line present in pr-numbered.diff)
-title: one short line naming the problem
-body: one or two sentences on a SINGLE line — why it fails the bar, plus a concrete tighter rewording (or say: delete it).
-Repeat @@DOCNOTE blocks per note, at most 5. If every added comment/doc meets the bar, write an empty file. Do not post anything. Do not edit or commit tracked files." "docs" \
-      || { warn "docs pass failed — comment renders without docs notes"; rm -f "$SCRATCH/docs-notes.md"; }
-    echo "DOCS_SECS=$((SECONDS - _t2))" >> "$METRICS"
-    oc_extract_metrics "$SCRATCH/oc-docs.jsonl" "DOCS"
-  else
-    info "docs pass — skipped (no added comments/docs in diff)"
-  fi
 fi

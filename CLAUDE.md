@@ -70,7 +70,11 @@ default on) → `docs-notes.md` (`@@DOCNOTE` records): rates the
 comments/docstrings/doc prose the PR *adds* for readability, durability, and
 pragmatism. It runs outside generate/verify on purpose — those prompts ban doc
 suggestions to keep the bug channel quiet — never blocks, is skipped when the
-diff adds no comment/doc lines, and renders as a collapsed 📚 section.
+diff adds no comment/doc lines, and renders as a collapsed 📚 section. It only
+needs gather output, so it runs **in parallel** with prep+generate+verify (off
+the critical path; reaped before the failure gate). With `OPENREVIEW_AUTH_CMD`
+set it drops back to serial — concurrent oc_run calls would race the
+credential-minting command.
 
 There is **no LLM format pass** — `render.sh` parses the verified findings and
 builds `opencode-review.md` deterministically (free, fixed output shape).
