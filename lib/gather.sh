@@ -64,22 +64,33 @@ gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
   > "$PREV_COMMENT_RAW" 2>/dev/null || true
 
 # Incremental v2 (TASK-45): extract the previous review's machine-readable
-# findings TSV (the agent details block render.sh emits, schema: sev conf
-# path line anchored title body) so they can be carried forward. Tolerant:
-# CRLF-normalize first, pull only the content between the ```tsv fences, skip
-# the header row, skip any row with fewer than 7 tab-separated fields. Absent
-# or unparseable -> no file, i.e. today's behavior (no carry-forward). Restart
-# must not carry anything forward, same as it ignores all other prior state.
+# findings TSV (schema: sev conf path line anchored title body) so they can
+# be carried forward. Primary source is the hidden `openreview:agent` block
+# (base64 payload post.sh embeds); legacy comments carry the same TSV in a
+# visible ```tsv fence instead, so fall back to that.
+# Tolerant either way: CRLF-normalize, keep only rows with >= 7 tab-separated
+# fields (this also drops the payload's prose/header lines). Absent or
+# unparseable -> no file, i.e. no carry-forward. Restart must not carry
+# anything forward, same as it ignores all other prior state.
 rm -f "$SCRATCH/prev-findings.tsv"
 if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
-  tr -d '\r' < "$PREV_COMMENT_RAW" \
-    | awk '
-        /^```tsv[[:space:]]*$/ { infence=1; next }
-        /^```[[:space:]]*$/    { infence=0; next }
-        infence                { print }
-      ' \
-    | awk -F'\t' 'NR==1 { next } NF>=7 { print }' \
-    > "$SCRATCH/prev-findings.tsv"
+  AGENT_B64=$(tr -d '\r' < "$PREV_COMMENT_RAW" \
+    | grep -oE 'openreview:agent [A-Za-z0-9+/=]+' | tail -1 \
+    | sed -E 's/^openreview:agent //' || true)
+  if [ -n "$AGENT_B64" ]; then
+    b64d "$AGENT_B64" \
+      | awk -F'\t' 'NF>=7 && tolower($1)!="sev" { print }' \
+      > "$SCRATCH/prev-findings.tsv" || true
+  else
+    tr -d '\r' < "$PREV_COMMENT_RAW" \
+      | awk '
+          /^```tsv[[:space:]]*$/ { infence=1; next }
+          /^```[[:space:]]*$/    { infence=0; next }
+          infence                { print }
+        ' \
+      | awk -F'\t' 'NR==1 { next } NF>=7 { print }' \
+      > "$SCRATCH/prev-findings.tsv"
+  fi
   [ -s "$SCRATCH/prev-findings.tsv" ] || rm -f "$SCRATCH/prev-findings.tsv"
 fi
 
@@ -98,7 +109,7 @@ elif [ -s "$PREV_COMMENT_RAW" ]; then
     | grep -oE 'openreview:state [A-Za-z0-9+/=]+' | tail -1 \
     | sed -E 's/^openreview:state //' || true)
   if [ -n "$STATE_B64" ]; then
-    STATE_JSON=$(printf '%s' "$STATE_B64" | base64 -d 2>/dev/null || true)
+    STATE_JSON=$(b64d "$STATE_B64" || true)
     if [ -n "$STATE_JSON" ]; then
       LAST_SHA=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"last_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
       PREV_PATCH_ID=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"patch_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -119,7 +130,7 @@ if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
     | grep -oE 'openreview:ledger [A-Za-z0-9+/=]+' | tail -1 \
     | sed -E 's/^openreview:ledger //' || true)
   if [ -n "$LEDGER_B64" ]; then
-    printf '%s' "$LEDGER_B64" | base64 -d 2>/dev/null \
+    b64d "$LEDGER_B64" \
       | awk -F'\t' 'NF == 7 \
           && $1 ~ /^[0-9a-f]+$/ && length($1) >= 7 && length($1) <= 40 \
           && ($2 == "full" || $2 == "incr") \
@@ -501,7 +512,7 @@ awk '
 if [ "$RESTART" -eq 1 ]; then
   echo "(no previous review)" > "$SCRATCH/prev-review.md"
 else
-  sed '/<!-- openreview:state /d; /<!-- openreview:ledger /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
+  sed '/<!-- openreview:state /d; /<!-- openreview:ledger /d; /<!-- openreview:agent /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
     || : > "$SCRATCH/prev-review.md"
   [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
 fi

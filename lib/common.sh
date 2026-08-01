@@ -57,6 +57,18 @@ sanitize_text() {
   fi
 }
 
+# b64d <base64-string>: decode to stdout portably — GNU coreutils and new
+# macOS take `-d`, older stock macOS only `-D`. Each attempt is buffered so a
+# failed decode emits nothing (GNU -d streams the valid prefix of garbage
+# input before failing); garbage input yields empty output + non-zero status.
+b64d() {
+  local out
+  out=$(printf '%s' "$1" | base64 -d 2>/dev/null) \
+    || out=$(printf '%s' "$1" | base64 -D 2>/dev/null) \
+    || return 1
+  printf '%s' "$out"
+}
+
 # --- model resolution --------------------------------------------------------
 # Precedence: OPENREVIEW_MODEL > OC_MODEL > a pre-exported OR_MODEL > bundled
 # free model. The action feeds the `model` input through OPENREVIEW_MODEL.

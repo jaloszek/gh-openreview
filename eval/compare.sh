@@ -61,14 +61,24 @@ parse_answer_key() {
 
 # --- comment parsing -------------------------------------------------------
 
-# extract_tsv_block <comment.md> <out.tsv> — writes the content of the first
-# ```tsv fenced block (header + rows); empty file if none exists.
+# extract_tsv_block <comment.md> <out.tsv> — writes the machine findings TSV
+# (header + rows). Primary source is the hidden `openreview:agent` base64
+# block (keep only tabbed rows: the payload also carries prose lines); legacy
+# comments carry a visible ```tsv fence instead, so fall back to that. Empty
+# file if neither exists.
 extract_tsv_block() {
-  awk '
-    /^```tsv[ \t]*$/ { f = 1; next }
-    f && /^```/ { f = 0; next }
-    f { print }
-  ' "$1" > "$2"
+  local b64
+  b64=$(grep -oE 'openreview:agent [A-Za-z0-9+/=]+' "$1" | tail -1 \
+    | sed -E 's/^openreview:agent //' || true)
+  if [ -n "$b64" ]; then
+    b64d "$b64" | awk -F'\t' 'NF >= 7' > "$2" || : > "$2"
+  else
+    awk '
+      /^```tsv[ \t]*$/ { f = 1; next }
+      f && /^```/ { f = 0; next }
+      f { print }
+    ' "$1" > "$2"
+  fi
 }
 
 # parse_tsv_findings <block.tsv> <out.tsv>
@@ -379,6 +389,33 @@ selftest() {
   fi
   if ! grep -q 'notify.py:99' "$tdir/report-opencode.txt"; then
     warn "selftest: opencode fixture — expected an unmatched finding at notify.py:99"
+    fails=$((fails + 1))
+  fi
+
+  # Case 1b: the same findings as case 1, delivered via the hidden
+  # `openreview:agent` base64 block (the current comment format) — locks the
+  # decode + NF>=7 extraction round-trip the fence fixtures don't cover. The
+  # comment is GENERATED here from case 1's fence rows, so the two cases can
+  # never drift apart: any payload-format change that breaks extraction
+  # fails this case immediately.
+  local agentfixture="$tdir/compare-opencode-agent.md" agentb64
+  agentb64=$( {
+    printf 'Reviewer summary: canned agent-block fixture\n'
+    printf 'Findings TSV (incl. over-cap and confidence-suppressed):\n'
+    awk '/^```tsv[ \t]*$/ { f = 1; next } f && /^```/ { f = 0; next } f { print }' \
+      "$EVAL_DIR/selftest/compare-opencode-comment.md"
+  } | base64 | tr -d '\n')
+  printf '## 🤖 OpenCode Review — canned fixture (hidden agent block)\n\nLooks good.\n\n<!-- openreview:agent %s -->\n' \
+    "$agentb64" > "$agentfixture"
+  outtsv="$tdir/compare-opencode-agent.tsv"
+  : > "$outtsv"
+  score_reviewer opencode-agent "$agentfixture" "$mainkey" "$extraskey" "$outtsv" > "$tdir/report-opencode-agent.txt"
+  if [ "$(awk -F'\t' '$2 ~ /^L/ && $3 == 1' "$outtsv" | wc -l | tr -d ' ')" != 4 ]; then
+    warn "selftest: opencode-agent fixture — expected 4 seeded hits (L01/L03/L04/L07)"
+    fails=$((fails + 1))
+  fi
+  if ! awk -F'\t' '$2 == "X02" && $3 == 1 { found = 1 } END { exit !found }' "$outtsv"; then
+    warn "selftest: opencode-agent fixture — expected X02 extra to be matched"
     fails=$((fails + 1))
   fi
 
