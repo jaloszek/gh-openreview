@@ -66,15 +66,24 @@ gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
 # Incremental v2 (TASK-45): extract the previous review's machine-readable
 # findings (schema: sev conf path line anchored title body) so they can be
 # carried forward. Source priority mirrors the formats render.sh has emitted:
-# 1. the collapsed 🤖 agent section's markdown table (current format),
-# 2. the hidden `openreview:agent` base64 block (one interim format),
-# 3. the visible ```tsv fence (legacy).
+# 1. the hidden `openreview:findings` base64 block (current format),
+# 2. the collapsed 🤖 section's markdown table (interim),
+# 3. the hidden `openreview:agent` base64 block (interim),
+# 4. the visible ```tsv fence (legacy).
 # Tolerant throughout: CRLF-normalize, keep only well-formed rows. Absent or
 # unparseable -> no file, i.e. no carry-forward. Restart must not carry
 # anything forward, same as it ignores all other prior state.
 rm -f "$SCRATCH/prev-findings.tsv"
 if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
-  agent_table_to_tsv "$PREV_COMMENT_RAW" > "$SCRATCH/prev-findings.tsv" || true
+  FINDINGS_STATE_B64=$(extract_hidden_block "$PREV_COMMENT_RAW" findings || true)
+  if [ -n "$FINDINGS_STATE_B64" ]; then
+    b64d "$FINDINGS_STATE_B64" \
+      | awk -F'\t' 'NF>=7 && tolower($1)!="sev" { print }' \
+      > "$SCRATCH/prev-findings.tsv" || true
+  fi
+  if [ ! -s "$SCRATCH/prev-findings.tsv" ]; then
+    agent_table_to_tsv "$PREV_COMMENT_RAW" > "$SCRATCH/prev-findings.tsv" || true
+  fi
   if [ ! -s "$SCRATCH/prev-findings.tsv" ]; then
     AGENT_B64=$(extract_hidden_block "$PREV_COMMENT_RAW" agent || true)
     if [ -n "$AGENT_B64" ]; then
@@ -509,7 +518,7 @@ awk '
 if [ "$RESTART" -eq 1 ]; then
   echo "(no previous review)" > "$SCRATCH/prev-review.md"
 else
-  sed '/<!-- openreview:state /d; /<!-- openreview:ledger /d; /<!-- openreview:agent /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
+  sed '/<!-- openreview:state /d; /<!-- openreview:ledger /d; /<!-- openreview:agent /d; /<!-- openreview:findings /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
     || : > "$SCRATCH/prev-review.md"
   [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
 fi

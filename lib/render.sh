@@ -605,58 +605,89 @@ fi
 
 } > "$OUT"
 
-# Agent data section (always collapsed): reviewer summary + run history + a
-# findings table covering EVERYTHING (rendered + over-cap nits +
-# confidence-suppressed), so agents asked to act on the review see what
-# humans didn't — and humans can still audit it, unlike a base64 blob.
-# The markdown table doubles as the machine format: gather.sh and
-# eval/compare.sh parse the rows back (agent_table_to_tsv in common.sh);
-# `|` in text cells is swapped for `¦` so cell boundaries stay unambiguous.
-# Capped at 30 rows with an explicit omitted-rows note.
+# Review-metadata section (always collapsed): what this run checked and how —
+# reviewer summary, the steps/modes/timings of THIS run, and the run history.
+# Deliberately NO findings here: the visible bullets already carry them for
+# humans, and repeating them was pure duplication. The machine copy needed
+# for carry-forward (incl. over-cap and suppressed rows) rides the hidden
+# openreview:findings block instead (findings-state.tsv below).
 #
 # Written to its own file, NOT into the body: post.sh appends it AFTER body
-# truncation with its own measured reserve, so the carry-forward table
-# survives exactly the large-PR runs where the body gets cut.
+# truncation with its own measured reserve.
 AGENT_SECTION="$SCRATCH/agent-section.md"
 : > "$AGENT_SECTION"
 {
-  if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
-    n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
-    n_runs=$(wc -l < "$LEDGER" | tr -d ' ')
-    printf '<details><summary>🤖 Agent data (%d findings · %d runs)</summary>\n\n' "$n_payload_rows" "$n_runs"
-    if [ -n "$PRDESC_SUMMARY" ]; then
-      printf '**Summary:** %s\n' "$PRDESC_SUMMARY"
-    fi
-    if [ -s "$LEDGER" ]; then
-      # One line, oldest run first: sha mode important/nit candidates secs cost.
-      printf '**Runs:** %s\n' "$(awk -F'\t' '
-        {
-          e = "`" $1 "` " $2 " " $3 "i/" $4 "n " $5 "c " $6 "s"
-          if ($7 != "-") e = e " $" $7
-          s = s (NR > 1 ? " · " : "") e
-        }
-        END { print s }
-      ' "$LEDGER")"
-    fi
-    if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
-      printf '\n| sev | conf | loc | anc | title | body |\n|---|---|---|---|---|---|\n'
-      # Single awk over both files, capped via NR — a cat|head pipeline would
-      # SIGPIPE cat on a large payload and abort render under pipefail.
-      awk -F'\t' '
-        NR <= 30 {
-          sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
-          gsub(/\|/, "¦", loc); gsub(/\|/, "¦", title); gsub(/\|/, "¦", body)
-          anc = (note == "[unanchored]") ? "n" : "y"
-          printf "| %s | %s | `%s` | %s | %s | %s |\n", sev, conf, loc, anc, title, body
-        }
-      ' "$TSV" "$TSV.suppressed"
-      if [ "$n_payload_rows" -gt 30 ]; then
-        printf '\n_%d more rows omitted — this table is NOT complete._\n' "$((n_payload_rows - 30))"
-      fi
-    fi
-    printf '\n</details>\n\n'
+  printf '<details><summary>🤖 Review metadata</summary>\n\n'
+  if [ -n "$PRDESC_SUMMARY" ]; then
+    printf '**Summary:** %s\n' "$PRDESC_SUMMARY"
   fi
+  # Steps line: mode + per-pass seconds + candidate funnel — the "what ran"
+  # record the next run (and anyone debugging a review) reads first. Parts
+  # are omitted when their step didn't run.
+  steps=""
+  if [ -s "$SCRATCH/incremental-note.md" ]; then
+    incr_since=$(sed -n 's/.*previously reviewed at \([0-9a-f]\{7\}\)[0-9a-f]*.*/\1/p' "$SCRATCH/incremental-note.md" | head -1)
+    steps="incremental review since \`${incr_since:-unknown}\`"
+  else
+    steps="full review"
+  fi
+  [ "${PREP_SECS:-0}" -gt 0 ] && steps="$steps · prep ${PREP_SECS}s"
+  steps="$steps · generate ${PASS1_SECS:-0}s"
+  if [ "${PASS2_SECS:-0}" -gt 0 ]; then
+    n_evidence=$(grep -c '^## FINDING' "$SCRATCH/evidence.md" 2>/dev/null || true)
+    case "$n_evidence" in ''|*[!0-9]*) n_evidence=0 ;; esac
+    steps="$steps · verify ${PASS2_SECS}s"
+    [ "$n_evidence" -gt 0 ] && steps="$steps (${n_evidence} evidence packs)"
+  fi
+  [ "${DOCS_SECS:-0}" -gt 0 ] && steps="$steps · docs ${DOCS_SECS}s"
+  steps="$steps · ${n_cand} candidates → ${n_total} kept"
+  n_escalated=0
+  [ -s "$SCRATCH/prev-findings-escalated.tsv" ] && n_escalated=$(wc -l < "$SCRATCH/prev-findings-escalated.tsv" | tr -d ' ')
+  [ "$n_escalated" -gt 0 ] && steps="$steps · ${n_escalated} carried re-verified (blast radius)"
+  printf '**Steps:** %s\n' "$steps"
+  if [ -s "$LEDGER" ]; then
+    # One line, oldest run first: sha mode important/nit candidates secs cost.
+    printf '**Runs:** %s\n' "$(awk -F'\t' '
+      {
+        e = "`" $1 "` " $2 " " $3 "i/" $4 "n " $5 "c " $6 "s"
+        if ($7 != "-") e = e " $" $7
+        s = s (NR > 1 ? " · " : "") e
+      }
+      END { print s }
+    ' "$LEDGER")"
+  fi
+  printf '\n</details>\n\n'
 } > "$AGENT_SECTION"
+
+# findings-state.tsv: the COMPLETE machine findings record (rendered +
+# over-cap + confidence-suppressed; 7 columns: sev conf path line anchored
+# title body), capped at 30 rows with an explicit omitted-rows marker (no
+# tabs, so every consumer's field filter drops it). post.sh embeds it as the
+# hidden openreview:findings block — pure carry-forward state, like
+# state/ledger, never rendered.
+FINDINGS_STATE="$SCRATCH/findings-state.tsv"
+: > "$FINDINGS_STATE"
+if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
+  n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
+  {
+    printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
+    # Single awk over both files, capped via NR — a cat|head pipeline would
+    # SIGPIPE cat on a large payload and abort render under pipefail.
+    awk -F'\t' -v OFS='\t' '
+      NR <= 30 {
+        sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
+        path=loc; line=""
+        idx = match(loc, /:[0-9]+$/)
+        if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+        anchored = (note == "[unanchored]") ? 0 : 1
+        print sev, conf, path, line, anchored, title, body
+      }
+    ' "$TSV" "$TSV.suppressed"
+    if [ "$n_payload_rows" -gt 30 ]; then
+      printf '(%d more rows omitted — this list is NOT complete)\n' "$((n_payload_rows - 30))"
+    fi
+  } > "$FINDINGS_STATE"
+fi
 rm -f "$TSV.suppressed"
 
 # findings.tsv (comment-style "both" input for post.sh's inline review):
