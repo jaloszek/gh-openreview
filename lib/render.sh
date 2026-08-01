@@ -605,21 +605,33 @@ fi
 
 } > "$OUT"
 
-# Agent payload for the hidden `openreview:agent` block (embedded by post.sh,
-# read back by gather.sh for carry-forward). Findings are capped at 30 rows
-# with an omitted-rows marker so a cut list isn't mistaken for complete.
-AGENT_PAYLOAD="$SCRATCH/agent-payload.md"
-: > "$AGENT_PAYLOAD"
-if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
-  {
+# Agent data section (always collapsed): reviewer summary + run history + a
+# findings table covering EVERYTHING (rendered + over-cap nits +
+# confidence-suppressed), so agents asked to act on the review see what
+# humans didn't — and humans can still audit it, unlike a base64 blob.
+# The markdown table doubles as the machine format: gather.sh and
+# eval/compare.sh parse the rows back (agent_table_to_tsv in common.sh);
+# `|` in text cells is swapped for `¦` so cell boundaries stay unambiguous.
+# Capped at 30 rows with an explicit omitted-rows note.
+#
+# Written to its own file, NOT into the body: post.sh appends it AFTER body
+# truncation with its own measured reserve, so the carry-forward table
+# survives exactly the large-PR runs where the body gets cut.
+AGENT_SECTION="$SCRATCH/agent-section.md"
+: > "$AGENT_SECTION"
+{
+  if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
+    n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
+    n_runs=$(wc -l < "$LEDGER" | tr -d ' ')
+    printf '<details><summary>🤖 Agent data (%d findings · %d runs)</summary>\n\n' "$n_payload_rows" "$n_runs"
     if [ -n "$PRDESC_SUMMARY" ]; then
-      printf 'Reviewer summary: %s\n' "$PRDESC_SUMMARY"
+      printf '**Summary:** %s\n' "$PRDESC_SUMMARY"
     fi
     if [ -s "$LEDGER" ]; then
       # One line, oldest run first: sha mode important/nit candidates secs cost.
-      printf 'Run history (oldest first): %s\n' "$(awk -F'\t' '
+      printf '**Runs:** %s\n' "$(awk -F'\t' '
         {
-          e = $1 " " $2 " " $3 "i/" $4 "n " $5 "c " $6 "s"
+          e = "`" $1 "` " $2 " " $3 "i/" $4 "n " $5 "c " $6 "s"
           if ($7 != "-") e = e " $" $7
           s = s (NR > 1 ? " · " : "") e
         }
@@ -627,29 +639,24 @@ if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
       ' "$LEDGER")"
     fi
     if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
-      # Prose label (no tabs — every TSV consumer filters on NF), then a real
-      # tabbed header row: eval/compare.sh detects the 7-column schema from it.
-      printf 'Findings TSV (incl. over-cap and confidence-suppressed):\n'
-      printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
-      n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
+      printf '\n| sev | conf | loc | anc | title | body |\n|---|---|---|---|---|---|\n'
       # Single awk over both files, capped via NR — a cat|head pipeline would
       # SIGPIPE cat on a large payload and abort render under pipefail.
-      awk -F'\t' -v OFS='\t' '
+      awk -F'\t' '
         NR <= 30 {
           sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
-          path=loc; line=""
-          idx = match(loc, /:[0-9]+$/)
-          if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
-          anchored = (note == "[unanchored]") ? 0 : 1
-          print sev, conf, path, line, anchored, title, body
+          gsub(/\|/, "¦", loc); gsub(/\|/, "¦", title); gsub(/\|/, "¦", body)
+          anc = (note == "[unanchored]") ? "n" : "y"
+          printf "| %s | %s | `%s` | %s | %s | %s |\n", sev, conf, loc, anc, title, body
         }
       ' "$TSV" "$TSV.suppressed"
       if [ "$n_payload_rows" -gt 30 ]; then
-        printf '(%d more rows omitted — this list is NOT complete)\n' "$((n_payload_rows - 30))"
+        printf '\n_%d more rows omitted — this table is NOT complete._\n' "$((n_payload_rows - 30))"
       fi
     fi
-  } > "$AGENT_PAYLOAD"
-fi
+    printf '\n</details>\n\n'
+  fi
+} > "$AGENT_SECTION"
 rm -f "$TSV.suppressed"
 
 # findings.tsv (comment-style "both" input for post.sh's inline review):
