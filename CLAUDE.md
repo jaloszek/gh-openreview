@@ -115,13 +115,14 @@ ordering. The visible part of the comment stays human-minimal (verdict +
 findings; a nits-only review opens with a "Looks good — safe to ignore"
 line); a non-`good` PRDESC rating renders as one finding-style bullet (🟠
 poor / 🟡 could-be-improved, never replacement text), and everything
-machine-oriented (findings table + reviewer summary + run history) lives in
-one always-collapsed 🤖 "Agent data" section at the end. The markdown table
-doubles as the machine format — human-auditable, and parsed back by
-gather.sh for carry-forward via `agent_table_to_tsv` (common.sh), with
-fallbacks for older comment formats (hidden `openreview:agent` base64 block,
-then the visible ```tsv fence). `|` in text cells is escaped to `¦` so the
-cell separator stays unambiguous.
+run metadata — reviewer summary, this run's steps/mode/timings, run history —
+lives in one always-collapsed 🤖 "Review metadata" section at the end. That
+section carries NO findings (the visible bullets already show them; repeating
+them was duplication). The complete machine findings record (incl. over-cap
+and confidence-suppressed rows) rides the hidden `openreview:findings` base64
+block — pure carry-forward state like state/ledger — read back by gather.sh
+with fallbacks for older comment formats (🤖 markdown table via
+`agent_table_to_tsv`, `openreview:agent` block, visible ```tsv fence).
 
 Run ledger: every posted comment re-embeds a hidden
 `<!-- openreview:ledger <base64> -->` block (beside `openreview:state`) — one

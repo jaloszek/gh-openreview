@@ -116,13 +116,13 @@ Two LLM passes plus a deterministic render:
    a trigger scenario; improvement nits are kept on usefulness.
 3. **Render** — a deterministic step builds the final comment (🔴 important /
    🟡 nit; pre-existing issues are never shown). The visible part stays
-   human-minimal — verdict plus findings — while everything machine-oriented
-   (a findings table, the reviewer's one-line risk summary, and the run
-   history) lives in one always-collapsed 🤖 "Agent data" section at the
-   end: out of the way by default, but still human-auditable, and the
-   markdown table doubles as the machine format the next run parses back.
-   It guarantees the marker header, posts one summary comment, and prunes
-   stale ones so only the latest remains.
+   human-minimal — verdict plus findings — while run metadata (the reviewer's
+   one-line risk summary, this run's steps and timings, and the run history)
+   lives in one always-collapsed 🤖 "Review metadata" section at the end.
+   Findings are never duplicated there: the machine copy the next run needs
+   for carry-forward rides a hidden state block instead. It guarantees the
+   marker header, posts one summary comment, and prunes stale ones so only
+   the latest remains.
 
 Before the passes run, a token-scoped step gathers the PR context into a scratch
 directory: the diff (with generated/vendored files excluded and a size cap), the

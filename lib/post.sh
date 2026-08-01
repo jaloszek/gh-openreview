@@ -43,7 +43,27 @@ if [ "$AGENT_SIZE" -gt 40000 ]; then
   warn "agent section too large (${AGENT_SIZE} chars) — dropping it this run"
   AGENT_SIZE=0
 fi
-TRAILER_RESERVE=$(( 2000 + AGENT_SIZE ))
+# Findings state (carry-forward TSV) rides a hidden block like state/ledger;
+# same size discipline: a pathological payload is dropped, never the comment.
+FINDINGS_B64=""
+if [ -s "$SCRATCH/findings-state.tsv" ]; then
+  FINDINGS_B64=$(base64 < "$SCRATCH/findings-state.tsv" | tr -d '\n')
+fi
+if [ "${#FINDINGS_B64}" -gt 40000 ]; then
+  warn "findings state too large (${#FINDINGS_B64} base64 chars) — dropping the block this run"
+  FINDINGS_B64=""
+fi
+TRAILER_RESERVE=$(( 2000 + AGENT_SIZE + ${#FINDINGS_B64} ))
+# Joint bound: each payload is capped at 40k, but their SUM must also stay
+# well under BODY_MAX or the truncation threshold below goes negative (and
+# head -c -N means "all but the last N" on GNU). Drop the findings block
+# first — it is machine state; the metadata section is the human-visible
+# part.
+if [ "$TRAILER_RESERVE" -gt 42000 ]; then
+  warn "trailers too large together (${TRAILER_RESERVE} chars) — dropping the findings block this run"
+  FINDINGS_B64=""
+  TRAILER_RESERVE=$(( 2000 + AGENT_SIZE ))
+fi
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
   # A byte-offset cut can land inside an open <details> block (the body ends
@@ -92,6 +112,13 @@ fi
 if [ -s "$SCRATCH/ledger.tsv" ]; then
   LEDGER_B64=$(base64 < "$SCRATCH/ledger.tsv" | tr -d '\n')
   printf '<!-- openreview:ledger %s -->\n' "$LEDGER_B64" >> "$REVIEW_FILE"
+fi
+
+# Findings state (b64'd above for the reserve): the complete machine findings
+# record gather.sh carries forward next run. Pure state — the visible bullets
+# already show humans every rendered finding.
+if [ -n "$FINDINGS_B64" ]; then
+  printf '<!-- openreview:findings %s -->\n' "$FINDINGS_B64" >> "$REVIEW_FILE"
 fi
 # Find every existing marker comment by AUTHOR_LOGIN, oldest first.
 IDS=()

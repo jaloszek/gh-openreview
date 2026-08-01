@@ -63,11 +63,17 @@ parse_answer_key() {
 
 # extract_tsv_block <comment.md> <out.tsv> — writes the machine findings TSV
 # (header + rows). Source priority mirrors the formats render.sh has emitted:
-# the collapsed 🤖 section's markdown table (current), the hidden
-# `openreview:agent` base64 block (interim), then the visible ```tsv fence
-# (legacy). Empty file if none exists.
+# the hidden `openreview:findings` base64 block (current), the collapsed 🤖
+# section's markdown table (interim), the hidden `openreview:agent` base64
+# block (interim), then the visible ```tsv fence (legacy). Empty file if
+# none exists.
 extract_tsv_block() {
   local rows b64
+  b64=$(extract_hidden_block "$1" findings || true)
+  if [ -n "$b64" ]; then
+    b64d "$b64" | awk -F'\t' 'NF >= 7' > "$2" || : > "$2"
+    return 0
+  fi
   rows=$(agent_table_to_tsv "$1")
   if [ -n "$rows" ]; then
     { printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'; printf '%s\n' "$rows"; } > "$2"
@@ -437,6 +443,26 @@ selftest() {
   fi
   if ! awk -F'\t' '$2 == "X02" && $3 == 1 { found = 1 } END { exit !found }' "$outtsv"; then
     warn "selftest: opencode-agent fixture — expected X02 extra to be matched"
+    fails=$((fails + 1))
+  fi
+
+  # Case 1c: same findings via the hidden `openreview:findings` base64 block
+  # (the current format, and the primary extraction tier) — generated from
+  # case 1's fence rows like case 1b, so it cannot drift.
+  local findfixture="$tdir/compare-opencode-findings.md" findb64
+  findb64=$(awk '/^```tsv[ \t]*$/ { f = 1; next } f && /^```/ { f = 0; next } f { print }' \
+    "$EVAL_DIR/selftest/compare-opencode-comment.md" | base64 | tr -d '\n')
+  printf '## 🤖 OpenCode Review — canned fixture (findings block)\n\nLooks good.\n\n<!-- openreview:findings %s -->\n' \
+    "$findb64" > "$findfixture"
+  outtsv="$tdir/compare-opencode-findings.tsv"
+  : > "$outtsv"
+  score_reviewer opencode-findings "$findfixture" "$mainkey" "$extraskey" "$outtsv" > "$tdir/report-opencode-findings.txt"
+  if [ "$(awk -F'\t' '$2 ~ /^L/ && $3 == 1' "$outtsv" | wc -l | tr -d ' ')" != 4 ]; then
+    warn "selftest: opencode-findings fixture — expected 4 seeded hits (L01/L03/L04/L07)"
+    fails=$((fails + 1))
+  fi
+  if ! awk -F'\t' '$2 == "X02" && $3 == 1 { found = 1 } END { exit !found }' "$outtsv"; then
+    warn "selftest: opencode-findings fixture — expected X02 extra to be matched"
     fails=$((fails + 1))
   fi
 
