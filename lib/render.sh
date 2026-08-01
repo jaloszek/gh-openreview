@@ -441,7 +441,20 @@ if [ -s "$SCRATCH/docs-notes.md" ]; then
         gsub(/\t/, " ", loc); gsub(/\t/, " ", title); gsub(/\t/, " ", body)
         # Hard display cap: the prompt asks for one-two sentences, but models
         # sometimes paste a full replacement paragraph — cut, never render it.
-        if (length(body) > 300) body = substr(body, 1, 297) "…"
+        # In a C locale awk counts bytes, so trim any partial trailing UTF-8
+        # sequence (continuation bytes, then an orphaned lead byte) before
+        # appending the ellipsis; in a UTF-8 locale the loop is a no-op.
+        if (length(body) > 300) {
+          body = substr(body, 1, 297)
+          while (length(body) > 0) {
+            c = substr(body, length(body), 1)
+            if (c >= "\200" && c <= "\277") body = substr(body, 1, length(body) - 1)
+            else break
+          }
+          c = substr(body, length(body), 1)
+          if (c >= "\300" && c <= "\367") body = substr(body, 1, length(body) - 1)
+          body = body "…"
+        }
         printf "%s\t%s\t%s\n", loc, title, body
       }
       have=0; loc=""; title=""; body=""
@@ -614,7 +627,10 @@ if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
       ' "$LEDGER")"
     fi
     if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
-      printf 'Findings TSV (incl. over-cap and confidence-suppressed): sev(important|nit) conf(high|med|low) path line anchored(1|0) title body\n'
+      # Prose label (no tabs — every TSV consumer filters on NF), then a real
+      # tabbed header row: eval/compare.sh detects the 7-column schema from it.
+      printf 'Findings TSV (incl. over-cap and confidence-suppressed):\n'
+      printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
       n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
       # Single awk over both files, capped via NR — a cat|head pipeline would
       # SIGPIPE cat on a large payload and abort render under pipefail.

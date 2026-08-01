@@ -61,14 +61,24 @@ parse_answer_key() {
 
 # --- comment parsing -------------------------------------------------------
 
-# extract_tsv_block <comment.md> <out.tsv> — writes the content of the first
-# ```tsv fenced block (header + rows); empty file if none exists.
+# extract_tsv_block <comment.md> <out.tsv> — writes the machine findings TSV
+# (header + rows). Primary source is the hidden `openreview:agent` base64
+# block (keep only tabbed rows: the payload also carries prose lines); legacy
+# comments carry a visible ```tsv fence instead, so fall back to that. Empty
+# file if neither exists.
 extract_tsv_block() {
-  awk '
-    /^```tsv[ \t]*$/ { f = 1; next }
-    f && /^```/ { f = 0; next }
-    f { print }
-  ' "$1" > "$2"
+  local b64
+  b64=$(grep -oE 'openreview:agent [A-Za-z0-9+/=]+' "$1" | tail -1 \
+    | sed -E 's/^openreview:agent //' || true)
+  if [ -n "$b64" ]; then
+    printf '%s' "$b64" | base64 -d 2>/dev/null | awk -F'\t' 'NF >= 7' > "$2" || : > "$2"
+  else
+    awk '
+      /^```tsv[ \t]*$/ { f = 1; next }
+      f && /^```/ { f = 0; next }
+      f { print }
+    ' "$1" > "$2"
+  fi
 }
 
 # parse_tsv_findings <block.tsv> <out.tsv>
