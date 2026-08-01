@@ -39,6 +39,14 @@ AGENT_B64=""
 if [ -s "$SCRATCH/agent-payload.md" ]; then
   AGENT_B64=$(base64 < "$SCRATCH/agent-payload.md" | tr -d '\n')
 fi
+# A pathological payload must never cost the comment itself: past 40k base64
+# chars, drop the block (carry-forward skips one run) rather than let the
+# reserve exceed BODY_MAX — a negative truncation threshold turns head -c
+# into "all but the last N" on GNU and keeps an over-limit body that 422s.
+if [ "${#AGENT_B64}" -gt 40000 ]; then
+  warn "agent payload too large (${#AGENT_B64} base64 chars) — dropping the hidden agent block this run"
+  AGENT_B64=""
+fi
 TRAILER_RESERVE=$(( 2000 + ${#AGENT_B64} ))
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"

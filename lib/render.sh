@@ -592,14 +592,9 @@ fi
 
 } > "$OUT"
 
-# Agent payload: post.sh embeds this file as a hidden
-# `<!-- openreview:agent <base64> -->` block — invisible to readers, plainly
-# decodable by any agent working the raw comment body — and gather.sh reads
-# the findings back from it next run for carry-forward. Contents: reviewer
-# summary + run history one-liners, then the findings TSV (rendered + capped
-# nits + confidence-suppressed), capped at 30 rows with an explicit omitted-
-# rows marker so neither agents nor carry-forward mistake a cut list for a
-# complete one.
+# Agent payload for the hidden `openreview:agent` block (embedded by post.sh,
+# read back by gather.sh for carry-forward). Findings are capped at 30 rows
+# with an omitted-rows marker so a cut list isn't mistaken for complete.
 AGENT_PAYLOAD="$SCRATCH/agent-payload.md"
 : > "$AGENT_PAYLOAD"
 if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
