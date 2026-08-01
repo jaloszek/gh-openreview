@@ -111,6 +111,17 @@ $(cat "$f")"
 # _merge_effective_config below), so a consumer repo can no longer silently
 # weaken the sandbox. Set OPENREVIEW_TRUST_REPO_CONFIG=true to restore the
 # pre-merge behavior (consumer config used verbatim).
+#
+# That merge alone is NOT sufficient, because opencode does not treat
+# OPENCODE_CONFIG as the last word: it merges every config source it finds, and
+# its documented precedence puts the project `./opencode.json` and any
+# `.opencode/` directory AFTER the OPENCODE_CONFIG file. A reviewed repo
+# shipping its own opencode.json therefore re-enabled bash/webfetch/websearch
+# on top of our merged config — verified against opencode 1.17.11, where the
+# model happily shelled out inside a repo whose config said `"bash": "allow"`.
+# Only the inline OPENCODE_CONFIG_CONTENT layer sits above those sources, so
+# _force_hardened_inline_config below re-asserts the hardened tools/permission
+# maps there and is what actually enforces the sandbox.
 # Warn (log + ::notice::) that config resolution picked <path> instead of the
 # bundled hardened config, and best-effort flag a missing bash deny/false.
 _warn_config_replacement() {
@@ -183,6 +194,46 @@ with open(os.environ["OUT"], "w") as f:
   export OPENCODE_CONFIG="$bundled"
 }
 
+# _force_hardened_inline_config: re-assert the bundled tools/permission maps via
+# OPENCODE_CONFIG_CONTENT, the only config layer that outranks the reviewed
+# repo's own ./opencode.json and .opencode/ (see the precedence note above).
+# The maps are read from the bundled config so it stays the single source of
+# truth for what the reviewer may do. An OPENCODE_CONFIG_CONTENT the caller set
+# themselves is preserved and merged under ours (their keys survive; ours win on
+# conflict) rather than clobbered. Best-effort: on unusable input or with
+# neither jq nor python3 present it warns loudly instead of failing the run,
+# because the merged OPENCODE_CONFIG is still in force — just overridable.
+_force_hardened_inline_config() {
+  local bundled="$OPENREVIEW_ROOT/opencode.json" content="" existing="${OPENCODE_CONFIG_CONTENT:-}"
+  if command -v jq >/dev/null 2>&1; then
+    content=$(EXISTING="$existing" jq -c -n --slurpfile b "$bundled" '
+      ($ENV.EXISTING | if . == "" then {} else (fromjson? // {}) end)
+      * {tools: $b[0].tools, permission: $b[0].permission}' 2>/dev/null) || content=""
+  elif command -v python3 >/dev/null 2>&1; then
+    content=$(BUNDLED="$bundled" EXISTING="$existing" python3 -c '
+import json, os
+with open(os.environ["BUNDLED"]) as f:
+    b = json.load(f)
+try:
+    out = json.loads(os.environ["EXISTING"]) or {}
+    if not isinstance(out, dict):
+        out = {}
+except Exception:
+    out = {}
+out["tools"] = b["tools"]
+out["permission"] = b["permission"]
+print(json.dumps(out, separators=(",", ":")))
+' 2>/dev/null) || content=""
+  fi
+  if [ -z "$content" ]; then
+    local msg="could not build the inline hardened config (needs jq or python3) — a repo-local opencode.json or .opencode/ can re-enable bash/webfetch/websearch for the model; see SECURITY.md"
+    warn "$msg"
+    echo "::warning::$msg"
+    return
+  fi
+  export OPENCODE_CONFIG_CONTENT="$content"
+}
+
 # trust_repo_config: OPENREVIEW_TRUST_REPO_CONFIG (env) / trust-repo-config
 # (action input, fed through the same env var). true restores pre-TASK-29
 # behavior (consumer config used verbatim, TASK-12 warning only).
@@ -213,6 +264,10 @@ prepare_opencode_config() {
   fi
   if [ -z "$consumer" ]; then
     export OPENCODE_CONFIG="$OPENREVIEW_ROOT/opencode.json"
+    # Reaching here means the repo has no ./opencode.json(c) for us to merge,
+    # but a `.opencode/` directory is a separate source we never resolve and it
+    # still outranks OPENCODE_CONFIG — so harden inline here too.
+    _force_hardened_inline_config
     return
   fi
   if _trust_repo_config; then
@@ -221,6 +276,7 @@ prepare_opencode_config() {
     return
   fi
   _merge_effective_config "$consumer"
+  _force_hardened_inline_config
 }
 
 # --- opencode invocation -----------------------------------------------------
@@ -241,9 +297,11 @@ prepare_opencode_config() {
 # saves the run). Observed 2026-08-01, deepseek-v4-flash on OpenCode Go:
 # generate 53-174s and verify 57-75s on small diffs, but the same tier hit
 # 300s twice on a 228-line diff — a 300s cap failed 6/6 attempts on a PR that
-# passes comfortably at 600s. 900s keeps roughly a 5x margin over the
-# observed median; the two-attempt retry means one stuck call costs at most
-# 2x this before the pass gives up.
+# passes comfortably at 600s. A fully sandboxed local run of that same PR then
+# measured generate at 539s (verify 50s), which is the number to beat: a 600s
+# cap would have cleared it by 61s. 900s keeps a real margin instead; the
+# two-attempt retry means one stuck call costs at most 2x this before the pass
+# gives up.
 oc_run() {
   local dir="$1" model="$2" prompt="$3" pass="${4:-}"
   local to="${OPENREVIEW_PASS_TIMEOUT:-900}"

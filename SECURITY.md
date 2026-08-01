@@ -34,6 +34,19 @@ that hard, in layers:
    and keep its `tools`/`permission` at least as strict as the bundled
    defaults.
 
+   That merge is written to a file passed as `OPENCODE_CONFIG`, which is **not**
+   opencode's last word: it merges every config source it finds, and its
+   documented precedence places the project `./opencode.json` and any
+   `.opencode/` directory *after* the `OPENCODE_CONFIG` file. Between
+   2026-07-03 (when the merge landed) and 2026-08-01, a reviewed repo that
+   shipped its own `opencode.json` with `"bash": "allow"` therefore got bash
+   back — confirmed against opencode 1.17.11. The engine now also re-asserts
+   the bundled `tools`/`permission` maps through `OPENCODE_CONFIG_CONTENT`, the
+   one layer that outranks both of those sources, and that inline layer is what
+   actually enforces this section. If neither `jq` nor `python3` is on PATH the
+   engine cannot build it and says so with a `::warning::` — treat such a run as
+   unsandboxed on any repo carrying its own opencode config.
+
 2. **The LLM step holds no GitHub token.** PR context is pre-fetched by separate,
    token-scoped steps. The step that runs the model is given only the LLM
    credential, never `GITHUB_TOKEN`.

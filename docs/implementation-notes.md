@@ -21,6 +21,16 @@ cadence is ~1–3 days. Docs: <https://opencode.ai/docs/>.
   every permission to an explicit `allow`/`deny`, including
   `"external_directory": "deny"`. The `oc_run` timeout is the backstop, but a
   hang burns the full per-pass timeout.
+- **Config layering beats config content** (found 2026-08-01, opencode
+  1.17.11). A hardened config is only as good as its precedence: opencode
+  merges every source it finds and ranks the project `./opencode.json` and
+  `.opencode/` *above* the file named by `OPENCODE_CONFIG`. A reviewed repo
+  carrying `"bash": "allow"` silently re-enabled bash for ~4 weeks despite
+  `_merge_effective_config` forcing the maps. Reproduce with two runs of the
+  same config, one inside a repo with its own `opencode.json` and one in a
+  clean dir — they disagree. The fix is `OPENCODE_CONFIG_CONTENT` (inline,
+  outranks both). Cost of the bug was not only security: with bash available
+  the model spent whole passes shelling out to `rg` and blew the timeout.
 - **Permission denies have a mixed enforcement record**: subagents (`task`
   tool) bypass `read`/`grep` denies (#32024); SDK-invoked agents ignored
   agent-level denies (#6396); assorted older bypass reports. Use **both**

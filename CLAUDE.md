@@ -131,6 +131,13 @@ always-collapsed 🤖 agent section at the end.
   `OPENCODE_CONFIG` env → project `./opencode.json(c)` → `~/.config/opencode/` →
   the bundled `opencode.json` (fallback only). The bundled config denies
   `bash`/`webfetch`/`websearch` to the model.
+- **The sandbox is enforced via `OPENCODE_CONFIG_CONTENT`, not `OPENCODE_CONFIG`**
+  (`_force_hardened_inline_config`). opencode merges all config sources and
+  ranks the reviewed repo's `./opencode.json` and `.opencode/` *above* the
+  `OPENCODE_CONFIG` file, so writing a hardened file there is not enough — a
+  repo shipping `"bash": "allow"` used to get bash back. The inline layer is the
+  only one those sources cannot override. Don't "simplify" this back into a
+  single config file.
 - **Model precedence** (`resolve_model`): `OPENREVIEW_MODEL` → `OC_MODEL` →
   a pre-exported `OR_MODEL` → bundled free model. The verify pass uses a
   (typically cheaper) tier via `resolve_verify_model` (`verify-model` input →
