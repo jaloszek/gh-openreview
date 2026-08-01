@@ -394,10 +394,22 @@ selftest() {
 
   # Case 1b: the same findings as case 1, delivered via the hidden
   # `openreview:agent` base64 block (the current comment format) — locks the
-  # decode + NF>=7 extraction round-trip the fence fixtures don't cover.
+  # decode + NF>=7 extraction round-trip the fence fixtures don't cover. The
+  # comment is GENERATED here from case 1's fence rows, so the two cases can
+  # never drift apart: any payload-format change that breaks extraction
+  # fails this case immediately.
+  local agentfixture="$tdir/compare-opencode-agent.md" agentb64
+  agentb64=$( {
+    printf 'Reviewer summary: canned agent-block fixture\n'
+    printf 'Findings TSV (incl. over-cap and confidence-suppressed):\n'
+    awk '/^```tsv[ \t]*$/ { f = 1; next } f && /^```/ { f = 0; next } f { print }' \
+      "$EVAL_DIR/selftest/compare-opencode-comment.md"
+  } | base64 | tr -d '\n')
+  printf '## 🤖 OpenCode Review — canned fixture (hidden agent block)\n\nLooks good.\n\n<!-- openreview:agent %s -->\n' \
+    "$agentb64" > "$agentfixture"
   outtsv="$tdir/compare-opencode-agent.tsv"
   : > "$outtsv"
-  score_reviewer opencode-agent "$EVAL_DIR/selftest/compare-opencode-agent.md" "$mainkey" "$extraskey" "$outtsv" > "$tdir/report-opencode-agent.txt"
+  score_reviewer opencode-agent "$agentfixture" "$mainkey" "$extraskey" "$outtsv" > "$tdir/report-opencode-agent.txt"
   if [ "$(awk -F'\t' '$2 ~ /^L/ && $3 == 1' "$outtsv" | wc -l | tr -d ' ')" != 4 ]; then
     warn "selftest: opencode-agent fixture — expected 4 seeded hits (L01/L03/L04/L07)"
     fails=$((fails + 1))
