@@ -395,6 +395,12 @@ if [ "$INCREMENTAL_MODE" -eq 1 ]; then
   # them as touched — the model re-verifies it against current code instead
   # of render.sh carrying it forward verbatim. Over-escalation is safe (one
   # extra re-check); a stale carried finding is not. Deterministic, no LLM.
+  #
+  # Escalated rows are ALSO recorded in prev-findings-escalated.tsv: their
+  # own lines did not change, so render.sh must never present a dropped
+  # re-verification as "resolved" — it moves such rows back to the carried
+  # set instead (see the escalated split in render.sh).
+  rm -f "$SCRATCH/prev-findings-escalated.tsv"
   INCR_SYMS="$SCRATCH/.blast-syms.txt"
   awk '
     /^(\+\+\+|---) / { next }
@@ -416,7 +422,8 @@ if [ "$INCREMENTAL_MODE" -eq 1 ]; then
       if (sym != "") print sym
       next
     }
-  ' "$SCRATCH/pr-incremental.diff" | awk 'length($0) >= 3' | sort -u | head -12 > "$INCR_SYMS"
+  ' "$SCRATCH/pr-incremental.diff" | awk 'length($0) >= 3' \
+    | sort | uniq -c | sort -k1,1rn -k2,2 | awk '{ print $2 }' | head -12 > "$INCR_SYMS"
   if [ -s "$INCR_SYMS" ]; then
     # Untouched = prev minus touched, keyed path+line+title exactly like
     # render.sh's own split, so both sides classify identically.
@@ -448,6 +455,7 @@ if [ "$INCREMENTAL_MODE" -eq 1 ]; then
         ' "$BLAST_UNTOUCHED" > "$BLAST_ROWS"
         if [ -s "$BLAST_ROWS" ]; then
           cat "$BLAST_ROWS" >> "$SCRATCH/prev-findings-touched.tsv"
+          cp "$BLAST_ROWS" "$SCRATCH/prev-findings-escalated.tsv"
           info "blast-radius: escalated $(wc -l < "$BLAST_ROWS" | tr -d ' ') carried finding(s) to re-verify (delta changed: $(paste -sd, "$INCR_SYMS"))"
         fi
         rm -f "$BLAST_ROWS"
@@ -466,7 +474,8 @@ else
     fi
   fi
   rm -f "$SCRATCH/pr-incremental.diff" "$SCRATCH/incremental-note.md" "$SCRATCH/incr-lines.tsv" \
-        "$SCRATCH/prev-findings.tsv" "$SCRATCH/prev-findings-touched.tsv"
+        "$SCRATCH/prev-findings.tsv" "$SCRATCH/prev-findings-touched.tsv" \
+        "$SCRATCH/prev-findings-escalated.tsv"
 fi
 
 # pr-numbered.diff: same diff --git / @@ structure as pr.diff, but every
