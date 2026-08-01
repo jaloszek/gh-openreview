@@ -118,8 +118,8 @@ poor / 🟡 could-be-improved, never replacement text), and everything
 machine-oriented (full findings TSV + reviewer summary + run history) lives in
 a hidden `<!-- openreview:agent <base64> -->` block — invisible to readers,
 decodable by agents working the raw comment body, and read back by gather.sh
-for carry-forward (with a fallback to the older visible ```tsv fence for
-comments posted before the block existed).
+for carry-forward (falling back to legacy comments that still carry the
+visible ```tsv fence).
 
 Run ledger: every posted comment re-embeds a hidden
 `<!-- openreview:ledger <base64> -->` block (beside `openreview:state`) — one

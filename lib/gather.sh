@@ -66,8 +66,8 @@ gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
 # Incremental v2 (TASK-45): extract the previous review's machine-readable
 # findings TSV (schema: sev conf path line anchored title body) so they can
 # be carried forward. Primary source is the hidden `openreview:agent` block
-# (base64 payload post.sh embeds); comments posted before that block existed
-# carried the same TSV in a visible ```tsv fence, so fall back to that.
+# (base64 payload post.sh embeds); legacy comments carry the same TSV in a
+# visible ```tsv fence instead, so fall back to that.
 # Tolerant either way: CRLF-normalize, keep only rows with >= 7 tab-separated
 # fields (this also drops the payload's prose/header lines). Absent or
 # unparseable -> no file, i.e. no carry-forward. Restart must not carry

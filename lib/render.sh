@@ -616,8 +616,10 @@ if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
     if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
       printf 'Findings TSV (incl. over-cap and confidence-suppressed): sev(important|nit) conf(high|med|low) path line anchored(1|0) title body\n'
       n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
-      cat "$TSV" "$TSV.suppressed" 2>/dev/null | head -30 | awk -F'\t' -v OFS='\t' '
-        {
+      # Single awk over both files, capped via NR — a cat|head pipeline would
+      # SIGPIPE cat on a large payload and abort render under pipefail.
+      awk -F'\t' -v OFS='\t' '
+        NR <= 30 {
           sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
           path=loc; line=""
           idx = match(loc, /:[0-9]+$/)
@@ -625,7 +627,7 @@ if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
           anchored = (note == "[unanchored]") ? 0 : 1
           print sev, conf, path, line, anchored, title, body
         }
-      '
+      ' "$TSV" "$TSV.suppressed"
       if [ "$n_payload_rows" -gt 30 ]; then
         printf '(%d more rows omitted — this list is NOT complete)\n' "$((n_payload_rows - 30))"
       fi
