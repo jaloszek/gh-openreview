@@ -32,9 +32,14 @@ fi
 # budget 60k total. Truncating after the appends would cut the machine-
 # readable blocks (and with them the skip guard, incremental state, run
 # history, and carry-forward findings) on exactly the large-PR runs where
-# that carried state matters most. The agent payload dominates the reserve
-# (30 findings × ~200 chars, ~1.4x as base64).
-TRAILER_RESERVE=12000
+# that carried state matters most. The reserve is computed from the ACTUAL
+# base64 agent payload (its row bodies are uncapped, so a fixed guess can
+# undershoot and 422 the PATCH): 2k covers the footer/state/ledger lines.
+AGENT_B64=""
+if [ -s "$SCRATCH/agent-payload.md" ]; then
+  AGENT_B64=$(base64 < "$SCRATCH/agent-payload.md" | tr -d '\n')
+fi
+TRAILER_RESERVE=$(( 2000 + ${#AGENT_B64} ))
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
   printf '\n\n_[comment truncated]_\n' >> "$REVIEW_FILE.trunc"
@@ -70,12 +75,11 @@ if [ -s "$SCRATCH/ledger.tsv" ]; then
   printf '<!-- openreview:ledger %s -->\n' "$LEDGER_B64" >> "$REVIEW_FILE"
 fi
 
-# Agent payload (render.sh built it): reviewer summary + run history + the
-# full findings TSV. Hidden from readers, decodable by agents working the raw
-# body, and read back by gather.sh next run for carry-forward — this block
-# replaced the old visible collapsed 🤖 section.
-if [ -s "$SCRATCH/agent-payload.md" ]; then
-  AGENT_B64=$(base64 < "$SCRATCH/agent-payload.md" | tr -d '\n')
+# Agent payload (render.sh built it, base64'd above for the reserve):
+# reviewer summary + run history + findings TSV. Hidden from readers,
+# decodable by agents working the raw body, and read back by gather.sh next
+# run for carry-forward.
+if [ -n "$AGENT_B64" ]; then
   printf '<!-- openreview:agent %s -->\n' "$AGENT_B64" >> "$REVIEW_FILE"
 fi
 

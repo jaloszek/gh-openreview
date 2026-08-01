@@ -592,15 +592,14 @@ fi
 
 } > "$OUT"
 
-# Agent payload — the machine-readable companion the visible comment no longer
-# carries (the old collapsed 🤖 section still added ~10 rendered lines per
-# review; humans never wanted them). post.sh embeds this file as a hidden
-# `<!-- openreview:agent <base64> -->` block, invisible to readers but plainly
-# decodable by any agent working the raw comment body, and gather.sh reads the
-# findings back from it next run for carry-forward. Contents: reviewer
-# summary + run history one-liners, then the full findings TSV (rendered +
-# capped nits + confidence-suppressed — everything a human didn't see),
-# capped at 30 rows.
+# Agent payload: post.sh embeds this file as a hidden
+# `<!-- openreview:agent <base64> -->` block — invisible to readers, plainly
+# decodable by any agent working the raw comment body — and gather.sh reads
+# the findings back from it next run for carry-forward. Contents: reviewer
+# summary + run history one-liners, then the findings TSV (rendered + capped
+# nits + confidence-suppressed), capped at 30 rows with an explicit omitted-
+# rows marker so neither agents nor carry-forward mistake a cut list for a
+# complete one.
 AGENT_PAYLOAD="$SCRATCH/agent-payload.md"
 : > "$AGENT_PAYLOAD"
 if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
@@ -620,7 +619,8 @@ if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
       ' "$LEDGER")"
     fi
     if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
-      printf 'Findings TSV (all, incl. over-cap and confidence-suppressed): sev(important|nit) conf(high|med|low) path line anchored(1|0) title body\n'
+      printf 'Findings TSV (incl. over-cap and confidence-suppressed): sev(important|nit) conf(high|med|low) path line anchored(1|0) title body\n'
+      n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
       cat "$TSV" "$TSV.suppressed" 2>/dev/null | head -30 | awk -F'\t' -v OFS='\t' '
         {
           sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
@@ -631,6 +631,9 @@ if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
           print sev, conf, path, line, anchored, title, body
         }
       '
+      if [ "$n_payload_rows" -gt 30 ]; then
+        printf '(%d more rows omitted — this list is NOT complete)\n' "$((n_payload_rows - 30))"
+      fi
     fi
   } > "$AGENT_PAYLOAD"
 fi
