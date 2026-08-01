@@ -36,8 +36,8 @@ that hard, in layers:
 
    That merge is written to a file passed as `OPENCODE_CONFIG`, which is **not**
    opencode's last word: it merges every config source it finds, and its
-   documented precedence places the project `./opencode.json` and any
-   `.opencode/` directory *after* the `OPENCODE_CONFIG` file. A reviewed repo
+   documented precedence ranks the project `./opencode.json` and any
+   `.opencode/` directory *above* the `OPENCODE_CONFIG` file. A reviewed repo
    shipping its own `opencode.json` with `"bash": "allow"` could therefore get
    bash back despite the merge (confirmed against opencode 1.17.11). The engine
    therefore re-asserts the bundled `tools`/`permission` maps through
