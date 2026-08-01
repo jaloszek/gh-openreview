@@ -54,6 +54,16 @@ if [ "${#FINDINGS_B64}" -gt 40000 ]; then
   FINDINGS_B64=""
 fi
 TRAILER_RESERVE=$(( 2000 + AGENT_SIZE + ${#FINDINGS_B64} ))
+# Joint bound: each payload is capped at 40k, but their SUM must also stay
+# well under BODY_MAX or the truncation threshold below goes negative (and
+# head -c -N means "all but the last N" on GNU). Drop the findings block
+# first — it is machine state; the metadata section is the human-visible
+# part.
+if [ "$TRAILER_RESERVE" -gt 42000 ]; then
+  warn "trailers too large together (${TRAILER_RESERVE} chars) — dropping the findings block this run"
+  FINDINGS_B64=""
+  TRAILER_RESERVE=$(( 2000 + AGENT_SIZE ))
+fi
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
   # A byte-offset cut can land inside an open <details> block (the body ends
