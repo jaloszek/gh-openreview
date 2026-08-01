@@ -247,7 +247,10 @@ When a consumer/user config is resolved this way, it is not used verbatim by
 default: the engine merges it with the bundled hardened config, forcing the
 `tools` and `permission` maps wholesale (so a consumer cannot re-enable
 bash/webfetch/etc. piecemeal) and dropping any `mcp` key. Everything else
-(provider, model, instructions, agent, theme…) passes through untouched. Set
+(provider, model, instructions, agent, theme…) passes through untouched. Because
+opencode ranks a repo's `./opencode.json` and `.opencode/` above the config file
+we hand it, the engine additionally re-asserts those hardened maps through
+`OPENCODE_CONFIG_CONTENT` — the one layer a reviewed repo cannot override. Set
 `trust-repo-config: true` to use the resolved config verbatim instead (see
 [SECURITY.md](SECURITY.md)).
 
