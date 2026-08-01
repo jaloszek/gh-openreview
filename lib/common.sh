@@ -57,6 +57,14 @@ sanitize_text() {
   fi
 }
 
+# b64d <base64-string>: decode to stdout portably — GNU coreutils and new
+# macOS take `-d`, older stock macOS only `-D`. Empty/garbage input yields
+# empty output + non-zero status; callers already tolerate both.
+b64d() {
+  printf '%s' "$1" | base64 -d 2>/dev/null && return 0
+  printf '%s' "$1" | base64 -D 2>/dev/null
+}
+
 # --- model resolution --------------------------------------------------------
 # Precedence: OPENREVIEW_MODEL > OC_MODEL > a pre-exported OR_MODEL > bundled
 # free model. The action feeds the `model` input through OPENREVIEW_MODEL.

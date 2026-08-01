@@ -78,7 +78,7 @@ if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
     | grep -oE 'openreview:agent [A-Za-z0-9+/=]+' | tail -1 \
     | sed -E 's/^openreview:agent //' || true)
   if [ -n "$AGENT_B64" ]; then
-    printf '%s' "$AGENT_B64" | base64 -d 2>/dev/null \
+    b64d "$AGENT_B64" \
       | awk -F'\t' 'NF>=7 && tolower($1)!="sev" { print }' \
       > "$SCRATCH/prev-findings.tsv" || true
   else
@@ -109,7 +109,7 @@ elif [ -s "$PREV_COMMENT_RAW" ]; then
     | grep -oE 'openreview:state [A-Za-z0-9+/=]+' | tail -1 \
     | sed -E 's/^openreview:state //' || true)
   if [ -n "$STATE_B64" ]; then
-    STATE_JSON=$(printf '%s' "$STATE_B64" | base64 -d 2>/dev/null || true)
+    STATE_JSON=$(b64d "$STATE_B64" || true)
     if [ -n "$STATE_JSON" ]; then
       LAST_SHA=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"last_sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
       PREV_PATCH_ID=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"patch_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -130,7 +130,7 @@ if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
     | grep -oE 'openreview:ledger [A-Za-z0-9+/=]+' | tail -1 \
     | sed -E 's/^openreview:ledger //' || true)
   if [ -n "$LEDGER_B64" ]; then
-    printf '%s' "$LEDGER_B64" | base64 -d 2>/dev/null \
+    b64d "$LEDGER_B64" \
       | awk -F'\t' 'NF == 7 \
           && $1 ~ /^[0-9a-f]+$/ && length($1) >= 7 && length($1) <= 40 \
           && ($2 == "full" || $2 == "incr") \

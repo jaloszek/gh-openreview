@@ -71,7 +71,7 @@ extract_tsv_block() {
   b64=$(grep -oE 'openreview:agent [A-Za-z0-9+/=]+' "$1" | tail -1 \
     | sed -E 's/^openreview:agent //' || true)
   if [ -n "$b64" ]; then
-    printf '%s' "$b64" | base64 -d 2>/dev/null | awk -F'\t' 'NF >= 7' > "$2" || : > "$2"
+    b64d "$b64" | awk -F'\t' 'NF >= 7' > "$2" || : > "$2"
   else
     awk '
       /^```tsv[ \t]*$/ { f = 1; next }
@@ -389,6 +389,21 @@ selftest() {
   fi
   if ! grep -q 'notify.py:99' "$tdir/report-opencode.txt"; then
     warn "selftest: opencode fixture — expected an unmatched finding at notify.py:99"
+    fails=$((fails + 1))
+  fi
+
+  # Case 1b: the same findings as case 1, delivered via the hidden
+  # `openreview:agent` base64 block (the current comment format) — locks the
+  # decode + NF>=7 extraction round-trip the fence fixtures don't cover.
+  outtsv="$tdir/compare-opencode-agent.tsv"
+  : > "$outtsv"
+  score_reviewer opencode-agent "$EVAL_DIR/selftest/compare-opencode-agent.md" "$mainkey" "$extraskey" "$outtsv" > "$tdir/report-opencode-agent.txt"
+  if [ "$(awk -F'\t' '$2 ~ /^L/ && $3 == 1' "$outtsv" | wc -l | tr -d ' ')" != 4 ]; then
+    warn "selftest: opencode-agent fixture — expected 4 seeded hits (L01/L03/L04/L07)"
+    fails=$((fails + 1))
+  fi
+  if ! awk -F'\t' '$2 == "X02" && $3 == 1 { found = 1 } END { exit !found }' "$outtsv"; then
+    warn "selftest: opencode-agent fixture — expected X02 extra to be matched"
     fails=$((fails + 1))
   fi
 
