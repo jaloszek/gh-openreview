@@ -84,8 +84,11 @@ extract_hidden_block() {
 
 # agent_table_to_tsv <file>: convert the collapsed 🤖 agent section's
 # findings table rows back to 7-field TSV (sev conf path line anchored title
-# body). Render escapes `|` in text cells to `¦`, so ` | ` is unambiguous as
-# the cell separator. No header row is emitted; empty output when no table.
+# body). Render escapes `|` in text cells to `¦` so ` | ` is unambiguous as
+# the cell separator; this parser maps `¦` back to `|`, making the escape a
+# round trip. (A literal `¦` in model text therefore reads back as `|` — an
+# accepted cosmetic trade-off, not worth a second escape level.) No header
+# row is emitted; empty output when no table.
 agent_table_to_tsv() {
   tr -d '\r' < "$1" 2>/dev/null | awk '
     /^\| (important|nit) \| / {
@@ -93,6 +96,7 @@ agent_table_to_tsv() {
       sub(/^\| /, "", line); sub(/ \|$/, "", line)
       n = split(line, c, / \| /)
       if (n != 6) next
+      gsub(/¦/, "|", c[3]); gsub(/¦/, "|", c[5]); gsub(/¦/, "|", c[6])
       loc = c[3]; gsub(/`/, "", loc)
       path = loc; ln = ""
       if (match(loc, /:[0-9]+$/)) { path = substr(loc, 1, RSTART - 1); ln = substr(loc, RSTART + 1) }
