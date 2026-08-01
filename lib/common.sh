@@ -116,9 +116,8 @@ $(cat "$f")"
 # OPENCODE_CONFIG as the last word: it merges every config source it finds, and
 # its documented precedence puts the project `./opencode.json` and any
 # `.opencode/` directory AFTER the OPENCODE_CONFIG file. A reviewed repo
-# shipping its own opencode.json therefore re-enabled bash/webfetch/websearch
-# on top of our merged config — verified against opencode 1.17.11, where the
-# model happily shelled out inside a repo whose config said `"bash": "allow"`.
+# shipping its own opencode.json could therefore re-enable bash/webfetch/
+# websearch on top of our merged config (verified against opencode 1.17.11).
 # Only the inline OPENCODE_CONFIG_CONTENT layer sits above those sources, so
 # _force_hardened_inline_config below re-asserts the hardened tools/permission
 # maps there and is what actually enforces the sandbox.
@@ -159,7 +158,10 @@ _merge_effective_config() {
   fi
   out="$SCRATCH/opencode-effective.json"
   if command -v jq >/dev/null 2>&1; then
-    if jq -s '.[0] as $c | .[1] as $b | ($c | del(.mcp)) * {tools: $b.tools, permission: $b.permission}' \
+    # `+` not `*` — see _force_hardened_inline_config: `*` merges recursively and
+    # would preserve consumer tools/permission sub-keys, contradicting the
+    # "forced wholesale" contract this function documents.
+    if jq -s '.[0] as $c | .[1] as $b | ($c | del(.mcp)) + {tools: $b.tools, permission: $b.permission}' \
       "$consumer" "$bundled" >"$out" 2>/dev/null; then
       export OPENCODE_CONFIG="$out"
       info "merged consumer config with hardened security keys (tools/permission forced, mcp dropped)"
@@ -206,9 +208,13 @@ with open(os.environ["OUT"], "w") as f:
 _force_hardened_inline_config() {
   local bundled="$OPENREVIEW_ROOT/opencode.json" content="" existing="${OPENCODE_CONFIG_CONTENT:-}"
   if command -v jq >/dev/null 2>&1; then
+    # `+` not `*`: jq's `*` is a RECURSIVE merge, which would let a caller keep
+    # tools/permission sub-keys the bundled map doesn't mention (e.g. a
+    # permission for a plugin-provided tool). `+` replaces both maps wholesale,
+    # matching the python3 branch below and the documented contract.
     content=$(EXISTING="$existing" jq -c -n --slurpfile b "$bundled" '
       ($ENV.EXISTING | if . == "" then {} else (fromjson? // {}) end)
-      * {tools: $b[0].tools, permission: $b[0].permission}' 2>/dev/null) || content=""
+      + {tools: $b[0].tools, permission: $b[0].permission}' 2>/dev/null) || content=""
   elif command -v python3 >/dev/null 2>&1; then
     content=$(BUNDLED="$bundled" EXISTING="$existing" python3 -c '
 import json, os
