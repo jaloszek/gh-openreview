@@ -8,8 +8,8 @@ body: one to three sentences on a SINGLE line — the reason grounded in the dif
 Repeat @@FINDING blocks for each finding. If there are NO findings, write no @@FINDING blocks at all.
 Then ALWAYS end the file with exactly:
 @@PRDESC
-summary: one sentence on a single line, addressed to the PR author — what this PR does and where its real risk lives (the riskiest part of the diff and what you checked there). ALWAYS include this line, especially when there are no findings.
+summary: ONE short line (max ~30 words) — the riskiest part of the diff and what you verified there. Do NOT recap what the PR does; the author already knows. ALWAYS include this line, especially when there are no findings.
 rating: good | could-be-improved | poor
-reason: one short line explaining the rating (omit this line when rating is good)
+reason: one short line, max ~20 words, explaining the rating (omit this line when rating is good)
 
-Rate the PR description (from pr-meta.json) against what the diff actually does. 'poor' = the PR description is empty, extremely outdated, or contradicts what the diff actually does. 'could-be-improved' = major gaps but acceptable to merge as-is. 'good' = everything else. Do NOT write a replacement description — rating + reason only.
+Rate the PR description (from pr-meta.json) against what the diff actually does. 'poor' = the PR description is missing/empty, extremely outdated, or contradicts what the diff actually does. 'could-be-improved' = notable gaps or small inaccuracies but acceptable to merge as-is. 'good' = everything else. Do NOT write a replacement description or propose new description text — rating + reason only.

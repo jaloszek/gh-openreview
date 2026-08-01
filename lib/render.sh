@@ -13,6 +13,7 @@
 #   body: <single line, includes the suggested fix>
 #   ... (repeat) ...
 #   @@PRDESC
+#   summary: one short line (riskiest area + what was verified there)
 #   rating: good | could-be-improved | poor
 #   reason: one short line (omitted when rating is good)
 #
@@ -21,6 +22,9 @@
 #   - 🟡 nit: render at most NIT_CAP (default 3), highest-confidence first;
 #     if more remain, add a trailing "… +N more nits" row.
 #   - pre-existing: never emitted (the passes don't write them).
+#   - PRDESC rating != good: one finding-style bullet at the end of the list
+#     (🟠 for poor, 🟡 for could-be-improved); the summary renders only inside
+#     the collapsed agent section.
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
@@ -424,9 +428,8 @@ n_docs=$(wc -l < "$DOCSTSV" | tr -d ' ')
 
 # Parse the rating/reason trailer defensively: unknown/missing rating -> "good"
 # (render nothing). Only the first "summary:"/"rating:"/"reason:" lines are
-# honored. The summary is the reviewer's one-line what-was-checked note —
-# rendered whenever present so even a zero-finding review shows engagement;
-# a model that omits it simply renders nothing extra.
+# honored. The summary is the reviewer's one-line what-was-checked note — it
+# renders inside the collapsed agent section only, never as visible prose.
 PRDESC_SUMMARY=$(awk 'tolower($0) ~ /^summary:/ { sub(/^[^:]*: */, ""); print; exit }' "$PRDESC")
 PRDESC_RATING=$(awk -F': *' 'tolower($0) ~ /^rating:/ { print tolower($2); exit }' "$PRDESC" | tr -d '[:space:]')
 PRDESC_REASON=$(awk -F': *' 'tolower($0) ~ /^reason:/ { sub(/^[^:]*: */, ""); print; exit }' "$PRDESC")
@@ -435,31 +438,36 @@ case "$PRDESC_RATING" in
   *) PRDESC_RATING="good" ;;
 esac
 
+# PR-description verdict renders as one finding-style bullet, never a footer
+# paragraph and never replacement text: poor (missing/contradicts the diff)
+# at medium prominence, could-be-improved as a low-prio nit.
+PRDESC_LINE=""
+if [ "$PRDESC_RATING" = "poor" ]; then
+  PRDESC_LINE="- 🟠 **PR description is missing or does not match the diff** — ${PRDESC_REASON:-empty, or it contradicts what the diff actually does}"
+elif [ "$PRDESC_RATING" = "could-be-improved" ]; then
+  PRDESC_LINE="- 🟡 **PR description could be improved** — ${PRDESC_REASON:-minor gaps vs. what the diff actually does}"
+fi
+
 # 2) Tallies.
 n_important=$(awk -F'\t' '$2=="important"{c++} END{print c+0}' "$TSV")
 n_nit=$(awk -F'\t' '$2=="nit"{c++} END{print c+0}' "$TSV")
 n_total=$(( n_important + n_nit ))
 nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
 
-# 3) Emit the comment.
+# 3) Emit the comment. Layout contract: the visible part stays human-minimal
+# (verdict + findings only); everything else — resolved log, docs notes, the
+# machine-readable findings + reviewer summary — lives in collapsed sections,
+# with the agent-dedicated one last.
 {
   if [ "$n_total" -eq 0 ]; then
     printf '%s\n\n' "$MARKER"
     if [ "$n_resolved" -gt 0 ]; then
-      printf '✅ No blocking issues found in this diff · %d resolved since last review.\n\n' "$n_resolved"
-      # Reviewer summary (from @@PRDESC): what the PR does and where its risk
-      # lives — it is what separates "no issues found" from "didn't look".
-      if [ -n "$PRDESC_SUMMARY" ]; then
-        printf '> 🔎 %s\n\n' "$PRDESC_SUMMARY"
-      fi
-      printf '<details><summary>✅ Resolved since last review (%d)</summary>\n\n' "$n_resolved"
-      awk -F'\t' '{ printf "- ~~%s~~ · `%s:%s`\n", $6, $3, $4 }' "$RESOLVED"
-      printf '\n</details>\n\n'
+      printf '✅ Looks good — all earlier findings were addressed (%d resolved), no new issues in this diff.\n\n' "$n_resolved"
     else
-      printf '✅ No blocking issues found in this diff.\n\n'
-      if [ -n "$PRDESC_SUMMARY" ]; then
-        printf '> 🔎 %s\n\n' "$PRDESC_SUMMARY"
-      fi
+      printf '✅ Looks good — no issues found in this diff.\n\n'
+    fi
+    if [ -n "$PRDESC_LINE" ]; then
+      printf '%s\n\n' "$PRDESC_LINE"
     fi
   else
     # Tally lives IN the header line — one-glance verdict (the field's
@@ -476,9 +484,9 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     fi
     printf '%s — %s\n\n' "$MARKER" "$parts"
 
-    # Reviewer summary reads as the intro line, above the findings list.
-    if [ -n "$PRDESC_SUMMARY" ]; then
-      printf '> 🔎 %s\n\n' "$PRDESC_SUMMARY"
+    # Nits-only verdict: say upfront that nothing blocks the merge.
+    if [ "$n_important" -eq 0 ]; then
+      printf 'Looks good — no blocking issues. The notes below are nitpicks and improvement ideas; take what is useful, the rest is safe to ignore.\n\n'
     fi
 
     # flat priority list: 🔴 high-conf important, 🟠 med/low-conf important
@@ -497,18 +505,35 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     if [ "$nits_hidden" -gt 0 ]; then
       printf -- '- 🟡 _+%d more %s over the cap_\n' "$nits_hidden" "$([ "$nits_hidden" -eq 1 ] && echo nit || echo nits)"
     fi
-    printf '\n'
-
-    if [ "$n_resolved" -gt 0 ]; then
-      printf '<details><summary>✅ Resolved since last review (%d)</summary>\n\n' "$n_resolved"
-      awk -F'\t' '{ printf "- ~~%s~~ · `%s:%s`\n", $6, $3, $4 }' "$RESOLVED"
-      printf '\n</details>\n\n'
+    if [ -n "$PRDESC_LINE" ]; then
+      printf '%s\n' "$PRDESC_LINE"
     fi
+    printf '\n'
+  fi
 
-    # Agent details block: full machine-readable findings (rendered + capped
-    # nits + confidence-suppressed), so agents asked to fix the review see
-    # everything a human didn't.
-    printf '<details><summary>🔍 Machine-readable findings (for agents)</summary>\n\n'
+  if [ "$n_resolved" -gt 0 ]; then
+    printf '<details><summary>✅ Resolved since last review (%d)</summary>\n\n' "$n_resolved"
+    awk -F'\t' '{ printf "- ~~%s~~ · `%s:%s`\n", $6, $3, $4 }' "$RESOLVED"
+    printf '\n</details>\n\n'
+  fi
+
+  # Comments-&-docs notes (advisory): collapsed so they never crowd findings.
+  if [ "$n_docs" -gt 0 ]; then
+    note_word=$([ "$n_docs" -eq 1 ] && echo note || echo notes)
+    printf '<details><summary>📚 Comments & docs (%d %s)</summary>\n\n' "$n_docs" "$note_word"
+    awk -F'\t' '{ printf "- **%s** · `%s` — %s\n", $2, $1, $3 }' "$DOCSTSV"
+    printf '\n</details>\n\n'
+  fi
+
+  # Agent details block (last, always collapsed — the one LLM-dedicated
+  # section): reviewer summary + full machine-readable findings (rendered +
+  # capped nits + confidence-suppressed), so agents asked to fix the review
+  # see everything a human didn't. Skipped when there is nothing to show.
+  if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
+    printf '<details><summary>🤖 For agents (machine-readable)</summary>\n\n'
+    if [ -n "$PRDESC_SUMMARY" ]; then
+      printf 'Reviewer summary: %s\n\n' "$PRDESC_SUMMARY"
+    fi
     printf '```tsv\n'
     printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
     {
@@ -537,19 +562,6 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
     printf 'Schema: sev(important|nit) conf(high|med|low) path line anchored(1|0) title body.\n'
     printf 'Includes ALL findings (even nits over the display cap and confidence-suppressed ones), so agents see what humans didn'"'"'t.\n'
     printf '</details>\n\n'
-  fi
-
-  # Comments-&-docs notes (advisory): collapsed so they never crowd findings.
-  if [ "$n_docs" -gt 0 ]; then
-    note_word=$([ "$n_docs" -eq 1 ] && echo note || echo notes)
-    printf '<details><summary>📚 Comments & docs (%d %s)</summary>\n\n' "$n_docs" "$note_word"
-    awk -F'\t' '{ printf "- **%s** · `%s` — %s\n", $2, $1, $3 }' "$DOCSTSV"
-    printf '\n</details>\n\n'
-  fi
-
-  # PR-description rating: render one line only when it's not "good".
-  if [ "$PRDESC_RATING" != "good" ]; then
-    printf '> 📝 PR description: **%s** — %s\n' "$PRDESC_RATING" "$PRDESC_REASON"
   fi
 } > "$OUT"
 rm -f "$TSV.suppressed"

@@ -113,10 +113,11 @@ Two LLM passes plus a deterministic render:
    ones (skipped when the first pass found nothing). Importants must prove a
    trigger scenario; improvement nits are kept on usefulness.
 3. **Render** — a deterministic step builds the final comment (🔴 important /
-   🟡 nit; pre-existing issues are never shown, plus an always-present 🔎
-   one-line reviewer summary of what the PR does and where its risk lives),
-   guarantees the marker header, posts one summary comment, and prunes stale
-   ones so only the latest remains.
+   🟡 nit; pre-existing issues are never shown). The visible part stays
+   human-minimal — verdict plus findings — while everything machine-oriented
+   (the full findings TSV and the reviewer's one-line risk summary) lives in
+   one always-collapsed agent section. It guarantees the marker header, posts
+   one summary comment, and prunes stale ones so only the latest remains.
 
 Before the passes run, a token-scoped step gathers the PR context into a scratch
 directory: the diff (with generated/vendored files excluded and a size cap), the

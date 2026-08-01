@@ -96,7 +96,7 @@ conf: high|med|low
 title: one short line
 body: one-to-three sentences on a single line
 @@PRDESC
-summary: one line — what the PR does + its riskiest area (always rendered as a 🔎 quote)
+summary: one short line — riskiest part of the diff + what was verified there (rendered only inside the collapsed agent section)
 rating: good | could-be-improved | poor
 reason: one short line (omitted when rating is good)
 ```
@@ -107,11 +107,16 @@ hardening, test gap for changed logic) — the generate prompt asks for the 2-3
 most valuable improvements even on a clean diff, while an empty review stays
 legitimate for truly trivial changes.
 
-No `@@FINDING` blocks ⇒ no findings (render emits "✅ No blocking issues" plus
-the summary line).
+No `@@FINDING` blocks ⇒ no findings (render emits "✅ Looks good — no issues
+found in this diff").
 `render.sh` selects all important findings + the top `OPENREVIEW_NIT_CAP` (3)
 nits, sorted by severity then confidence with an `NR` tie-breaker for stable
-ordering.
+ordering. The visible part of the comment stays human-minimal (verdict +
+findings; a nits-only review opens with a "Looks good — safe to ignore"
+line); a non-`good` PRDESC rating renders as one finding-style bullet (🟠
+poor / 🟡 could-be-improved, never replacement text), and everything
+machine-oriented (full findings TSV + reviewer summary) lives in one
+always-collapsed 🤖 agent section at the end.
 
 ### Conventions that matter
 
