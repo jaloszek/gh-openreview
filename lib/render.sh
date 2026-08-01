@@ -435,15 +435,15 @@ defang_file "$PRDESC"
 DOCSTSV="$SCRATCH/.docsnotes.tsv"
 : > "$DOCSTSV"
 if [ -s "$SCRATCH/docs-notes.md" ]; then
-  awk '
+  LC_ALL=C awk '
     function flush() {
       if (have && title != "" && body != "") {
         gsub(/\t/, " ", loc); gsub(/\t/, " ", title); gsub(/\t/, " ", body)
         # Hard display cap: the prompt asks for one-two sentences, but models
         # sometimes paste a full replacement paragraph — cut, never render it.
-        # In a C locale awk counts bytes, so trim any partial trailing UTF-8
-        # sequence (continuation bytes, then an orphaned lead byte) before
-        # appending the ellipsis; in a UTF-8 locale the loop is a no-op.
+        # This awk runs under LC_ALL=C so length/substr count bytes in every
+        # awk flavor; trim any partial trailing UTF-8 sequence (continuation
+        # bytes, then an orphaned lead byte) before appending the ellipsis.
         if (length(body) > 300) {
           body = substr(body, 1, 297)
           while (length(body) > 0) {
