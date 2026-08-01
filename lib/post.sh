@@ -27,27 +27,16 @@ if ! head -1 "$REVIEW_FILE" | grep -qF "$MARKER_MATCH"; then
   mv "$REVIEW_FILE.posted" "$REVIEW_FILE"
 fi
 
-# Truncate the model-derived body BEFORE appending the footer/state/ledger/
-# agent trailers, reserving room for them — the API 422s past 65,536 chars;
-# budget 60k total. Truncating after the appends would cut the machine-
-# readable blocks (and with them the skip guard, incremental state, run
-# history, and carry-forward findings) on exactly the large-PR runs where
-# that carried state matters most. The reserve is computed from the ACTUAL
-# base64 agent payload (its row bodies are uncapped, so a fixed guess can
-# undershoot and 422 the PATCH): 2k covers the footer/state/ledger lines.
-AGENT_B64=""
-if [ -s "$SCRATCH/agent-payload.md" ]; then
-  AGENT_B64=$(base64 < "$SCRATCH/agent-payload.md" | tr -d '\n')
-fi
-# A pathological payload must never cost the comment itself: past 40k base64
-# chars, drop the block (carry-forward skips one run) rather than let the
-# reserve exceed BODY_MAX — a negative truncation threshold turns head -c
-# into "all but the last N" on GNU and keeps an over-limit body that 422s.
-if [ "${#AGENT_B64}" -gt 40000 ]; then
-  warn "agent payload too large (${#AGENT_B64} base64 chars) — dropping the hidden agent block this run"
-  AGENT_B64=""
-fi
-TRAILER_RESERVE=$(( 2000 + ${#AGENT_B64} ))
+# Truncate the model-derived body BEFORE appending the footer/state/ledger
+# trailers, reserving room for them — the API 422s past 65,536 chars; budget
+# 60k total. Truncating after the appends would cut the machine-readable
+# blocks (and with them the skip guard, incremental state, and run history)
+# on exactly the large-PR runs where that carried state matters most. The
+# trailers are small and bounded (footer line + two base64 one-liners), so a
+# fixed reserve suffices. The findings table lives in the body itself; if
+# truncation ever cuts it, carry-forward degrades for one run — never the
+# skip guard.
+TRAILER_RESERVE=2000
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
   printf '\n\n_[comment truncated]_\n' >> "$REVIEW_FILE.trunc"
@@ -82,15 +71,6 @@ if [ -s "$SCRATCH/ledger.tsv" ]; then
   LEDGER_B64=$(base64 < "$SCRATCH/ledger.tsv" | tr -d '\n')
   printf '<!-- openreview:ledger %s -->\n' "$LEDGER_B64" >> "$REVIEW_FILE"
 fi
-
-# Agent payload (render.sh built it, base64'd above for the reserve):
-# reviewer summary + run history + findings TSV. Hidden from readers,
-# decodable by agents working the raw body, and read back by gather.sh next
-# run for carry-forward.
-if [ -n "$AGENT_B64" ]; then
-  printf '<!-- openreview:agent %s -->\n' "$AGENT_B64" >> "$REVIEW_FILE"
-fi
-
 # Find every existing marker comment by AUTHOR_LOGIN, oldest first.
 IDS=()
 if [ -n "$AUTHOR_LOGIN" ]; then

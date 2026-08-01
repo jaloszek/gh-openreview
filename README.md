@@ -117,11 +117,12 @@ Two LLM passes plus a deterministic render:
 3. **Render** — a deterministic step builds the final comment (🔴 important /
    🟡 nit; pre-existing issues are never shown). The visible part stays
    human-minimal — verdict plus findings — while everything machine-oriented
-   (the full findings TSV, the reviewer's one-line risk summary, and the run
-   history) lives in a hidden base64 block at the end of the comment body:
-   invisible to readers, decodable by any agent working the raw body. It
-   guarantees the marker header, posts one summary comment, and prunes stale
-   ones so only the latest remains.
+   (a findings table, the reviewer's one-line risk summary, and the run
+   history) lives in one always-collapsed 🤖 "Agent data" section at the
+   end: out of the way by default, but still human-auditable, and the
+   markdown table doubles as the machine format the next run parses back.
+   It guarantees the marker header, posts one summary comment, and prunes
+   stale ones so only the latest remains.
 
 Before the passes run, a token-scoped step gathers the PR context into a scratch
 directory: the diff (with generated/vendored files excluded and a size cap), the
@@ -160,8 +161,8 @@ line. On the next run:
 ledger — one compact row per review run (commit, full/incremental mode,
 finding and candidate counts, engine seconds, cost), capped at the last 5
 runs. Each run edits or prunes the previous comment, so the whole ledger is
-re-embedded into every new body; a one-line `Run history` also rides in the
-hidden agent payload. It is telemetry for spotting trends (a
+re-embedded into every new body; a one-line `Runs:` history also shows in
+the collapsed 🤖 section. It is telemetry for spotting trends (a
 zero-findings streak, a rising verify kill rate) — it never decides a skip,
 and a restart drops it with the rest of the previous state.
 

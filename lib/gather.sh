@@ -64,32 +64,33 @@ gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
   > "$PREV_COMMENT_RAW" 2>/dev/null || true
 
 # Incremental v2 (TASK-45): extract the previous review's machine-readable
-# findings TSV (schema: sev conf path line anchored title body) so they can
-# be carried forward. Primary source is the hidden `openreview:agent` block
-# (base64 payload post.sh embeds); legacy comments carry the same TSV in a
-# visible ```tsv fence instead, so fall back to that.
-# Tolerant either way: CRLF-normalize, keep only rows with >= 7 tab-separated
-# fields (this also drops the payload's prose/header lines). Absent or
+# findings (schema: sev conf path line anchored title body) so they can be
+# carried forward. Source priority mirrors the formats render.sh has emitted:
+# 1. the collapsed 🤖 agent section's markdown table (current format),
+# 2. the hidden `openreview:agent` base64 block (one interim format),
+# 3. the visible ```tsv fence (legacy).
+# Tolerant throughout: CRLF-normalize, keep only well-formed rows. Absent or
 # unparseable -> no file, i.e. no carry-forward. Restart must not carry
 # anything forward, same as it ignores all other prior state.
 rm -f "$SCRATCH/prev-findings.tsv"
 if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
-  AGENT_B64=$(tr -d '\r' < "$PREV_COMMENT_RAW" \
-    | grep -oE 'openreview:agent [A-Za-z0-9+/=]+' | tail -1 \
-    | sed -E 's/^openreview:agent //' || true)
-  if [ -n "$AGENT_B64" ]; then
-    b64d "$AGENT_B64" \
-      | awk -F'\t' 'NF>=7 && tolower($1)!="sev" { print }' \
-      > "$SCRATCH/prev-findings.tsv" || true
-  else
-    tr -d '\r' < "$PREV_COMMENT_RAW" \
-      | awk '
-          /^```tsv[[:space:]]*$/ { infence=1; next }
-          /^```[[:space:]]*$/    { infence=0; next }
-          infence                { print }
-        ' \
-      | awk -F'\t' 'NR==1 { next } NF>=7 { print }' \
-      > "$SCRATCH/prev-findings.tsv"
+  agent_table_to_tsv "$PREV_COMMENT_RAW" > "$SCRATCH/prev-findings.tsv" || true
+  if [ ! -s "$SCRATCH/prev-findings.tsv" ]; then
+    AGENT_B64=$(extract_hidden_block "$PREV_COMMENT_RAW" agent || true)
+    if [ -n "$AGENT_B64" ]; then
+      b64d "$AGENT_B64" \
+        | awk -F'\t' 'NF>=7 && tolower($1)!="sev" { print }' \
+        > "$SCRATCH/prev-findings.tsv" || true
+    else
+      tr -d '\r' < "$PREV_COMMENT_RAW" \
+        | awk '
+            /^```tsv[[:space:]]*$/ { infence=1; next }
+            /^```[[:space:]]*$/    { infence=0; next }
+            infence                { print }
+          ' \
+        | awk -F'\t' 'NR==1 { next } NF>=7 { print }' \
+        > "$SCRATCH/prev-findings.tsv"
+    fi
   fi
   [ -s "$SCRATCH/prev-findings.tsv" ] || rm -f "$SCRATCH/prev-findings.tsv"
 fi
@@ -105,9 +106,7 @@ PREV_FP=""
 if [ "$RESTART" -eq 1 ]; then
   info "restart requested — ignoring previous review state"
 elif [ -s "$PREV_COMMENT_RAW" ]; then
-  STATE_B64=$(tr -d '\r' < "$PREV_COMMENT_RAW" \
-    | grep -oE 'openreview:state [A-Za-z0-9+/=]+' | tail -1 \
-    | sed -E 's/^openreview:state //' || true)
+  STATE_B64=$(extract_hidden_block "$PREV_COMMENT_RAW" state || true)
   if [ -n "$STATE_B64" ]; then
     STATE_JSON=$(b64d "$STATE_B64" || true)
     if [ -n "$STATE_JSON" ]; then
@@ -126,9 +125,7 @@ fi
 # skip authority). Restart drops it like all other prior state.
 rm -f "$SCRATCH/prev-ledger.tsv"
 if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
-  LEDGER_B64=$(tr -d '\r' < "$PREV_COMMENT_RAW" \
-    | grep -oE 'openreview:ledger [A-Za-z0-9+/=]+' | tail -1 \
-    | sed -E 's/^openreview:ledger //' || true)
+  LEDGER_B64=$(extract_hidden_block "$PREV_COMMENT_RAW" ledger || true)
   if [ -n "$LEDGER_B64" ]; then
     b64d "$LEDGER_B64" \
       | awk -F'\t' 'NF == 7 \

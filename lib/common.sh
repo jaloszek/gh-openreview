@@ -69,6 +69,39 @@ b64d() {
   printf '%s' "$out"
 }
 
+# extract_hidden_block <file> <name>: print the base64 payload of the LAST
+# `<!-- openreview:<name> <base64> -->` block in <file>. Empty output +
+# non-zero status when absent. One place for the block-name/charset contract
+# shared by post.sh (producer), gather.sh, and eval/compare.sh (consumers).
+extract_hidden_block() {
+  local b64
+  b64=$(tr -d '\r' < "$1" 2>/dev/null \
+    | grep -oE "openreview:$2 [A-Za-z0-9+/=]+" | tail -1 \
+    | sed -E "s/^openreview:$2 //") || true
+  [ -n "$b64" ] || return 1
+  printf '%s' "$b64"
+}
+
+# agent_table_to_tsv <file>: convert the collapsed 🤖 agent section's
+# findings table rows back to 7-field TSV (sev conf path line anchored title
+# body). Render escapes `|` in text cells to `¦`, so ` | ` is unambiguous as
+# the cell separator. No header row is emitted; empty output when no table.
+agent_table_to_tsv() {
+  tr -d '\r' < "$1" 2>/dev/null | awk '
+    /^\| (important|nit) \| / {
+      line = $0
+      sub(/^\| /, "", line); sub(/ \|$/, "", line)
+      n = split(line, c, / \| /)
+      if (n != 6) next
+      loc = c[3]; gsub(/`/, "", loc)
+      path = loc; ln = ""
+      if (match(loc, /:[0-9]+$/)) { path = substr(loc, 1, RSTART - 1); ln = substr(loc, RSTART + 1) }
+      anchored = (c[4] == "y") ? 1 : 0
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", c[1], c[2], path, ln, anchored, c[5], c[6]
+    }
+  '
+}
+
 # --- model resolution --------------------------------------------------------
 # Precedence: OPENREVIEW_MODEL > OC_MODEL > a pre-exported OR_MODEL > bundled
 # free model. The action feeds the `model` input through OPENREVIEW_MODEL.

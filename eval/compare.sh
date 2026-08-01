@@ -62,14 +62,18 @@ parse_answer_key() {
 # --- comment parsing -------------------------------------------------------
 
 # extract_tsv_block <comment.md> <out.tsv> — writes the machine findings TSV
-# (header + rows). Primary source is the hidden `openreview:agent` base64
-# block (keep only tabbed rows: the payload also carries prose lines); legacy
-# comments carry a visible ```tsv fence instead, so fall back to that. Empty
-# file if neither exists.
+# (header + rows). Source priority mirrors the formats render.sh has emitted:
+# the collapsed 🤖 section's markdown table (current), the hidden
+# `openreview:agent` base64 block (interim), then the visible ```tsv fence
+# (legacy). Empty file if none exists.
 extract_tsv_block() {
-  local b64
-  b64=$(grep -oE 'openreview:agent [A-Za-z0-9+/=]+' "$1" | tail -1 \
-    | sed -E 's/^openreview:agent //' || true)
+  local rows b64
+  rows=$(agent_table_to_tsv "$1")
+  if [ -n "$rows" ]; then
+    { printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'; printf '%s\n' "$rows"; } > "$2"
+    return 0
+  fi
+  b64=$(extract_hidden_block "$1" agent || true)
   if [ -n "$b64" ]; then
     b64d "$b64" | awk -F'\t' 'NF >= 7' > "$2" || : > "$2"
   else
@@ -392,21 +396,26 @@ selftest() {
     fails=$((fails + 1))
   fi
 
-  # Case 1b: the same findings as case 1, delivered via the hidden
-  # `openreview:agent` base64 block (the current comment format) — locks the
-  # decode + NF>=7 extraction round-trip the fence fixtures don't cover. The
-  # comment is GENERATED here from case 1's fence rows, so the two cases can
-  # never drift apart: any payload-format change that breaks extraction
-  # fails this case immediately.
-  local agentfixture="$tdir/compare-opencode-agent.md" agentb64
-  agentb64=$( {
-    printf 'Reviewer summary: canned agent-block fixture\n'
-    printf 'Findings TSV (incl. over-cap and confidence-suppressed):\n'
+  # Case 1b: the same findings as case 1, delivered via the collapsed 🤖
+  # section's markdown table (the current comment format) — locks the
+  # table-parsing round-trip the fence fixtures don't cover. The comment is
+  # GENERATED here from case 1's fence rows, so the two cases can never
+  # drift apart: a table-format change that breaks extraction fails this
+  # case immediately.
+  local agentfixture="$tdir/compare-opencode-agent.md"
+  {
+    printf '## 🤖 OpenCode Review — canned fixture (agent table)\n\nLooks good.\n\n'
+    printf '<details><summary>🤖 Agent data (5 findings · 1 runs)</summary>\n\n'
+    printf '**Summary:** canned agent-table fixture\n\n'
+    printf '| sev | conf | loc | anc | title | body |\n|---|---|---|---|---|---|\n'
     awk '/^```tsv[ \t]*$/ { f = 1; next } f && /^```/ { f = 0; next } f { print }' \
-      "$EVAL_DIR/selftest/compare-opencode-comment.md"
-  } | base64 | tr -d '\n')
-  printf '## 🤖 OpenCode Review — canned fixture (hidden agent block)\n\nLooks good.\n\n<!-- openreview:agent %s -->\n' \
-    "$agentb64" > "$agentfixture"
+      "$EVAL_DIR/selftest/compare-opencode-comment.md" \
+      | awk -F'\t' 'NR > 1 && NF >= 7 {
+          loc = ($4 == "" ? $3 : $3 ":" $4)
+          printf "| %s | %s | `%s` | %s | %s | %s |\n", $1, $2, loc, ($5 == 1 ? "y" : "n"), $6, $7
+        }'
+    printf '\n</details>\n'
+  } > "$agentfixture"
   outtsv="$tdir/compare-opencode-agent.tsv"
   : > "$outtsv"
   score_reviewer opencode-agent "$agentfixture" "$mainkey" "$extraskey" "$outtsv" > "$tdir/report-opencode-agent.txt"
