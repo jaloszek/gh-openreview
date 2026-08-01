@@ -46,6 +46,15 @@ fi
 TRAILER_RESERVE=$(( 2000 + AGENT_SIZE ))
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
+  # A byte-offset cut can land inside an open <details> block (the body ends
+  # with collapsed sections); balance the tags so everything appended below
+  # renders at top level instead of nesting hidden inside the cut block.
+  n_open=$(grep -o '<details' "$REVIEW_FILE.trunc" | wc -l | tr -d ' ' || true)
+  n_close=$(grep -o '</details' "$REVIEW_FILE.trunc" | wc -l | tr -d ' ' || true)
+  while [ "$n_close" -lt "$n_open" ]; do
+    printf '\n</details>\n' >> "$REVIEW_FILE.trunc"
+    n_close=$((n_close + 1))
+  done
   printf '\n\n_[comment truncated]_\n' >> "$REVIEW_FILE.trunc"
   mv "$REVIEW_FILE.trunc" "$REVIEW_FILE"
   warn "review body exceeded $((BODY_MAX - TRAILER_RESERVE)) chars; truncated"
