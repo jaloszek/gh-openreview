@@ -454,6 +454,38 @@ n_nit=$(awk -F'\t' '$2=="nit"{c++} END{print c+0}' "$TSV")
 n_total=$(( n_important + n_nit ))
 nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
 
+# --- Run ledger --------------------------------------------------------------
+# One compact TSV row per review run (sha7 mode important nit candidates secs
+# cost), carried comment-to-comment: post.sh edits/prunes old comments, so the
+# whole history must be re-embedded in every new body (hidden
+# openreview:ledger block, read back by gather.sh as prev-ledger.tsv). Capped
+# at the last 5 runs. Purpose: make cost/depth trends — a zero-findings
+# streak, a rising verify kill rate — visible to the pipeline itself, as
+# input for depth/persona narrowing. Never a skip authority.
+LEDGER="$SCRATCH/ledger.tsv"
+# shellcheck disable=SC1091
+[ -f "$SCRATCH/metrics.env" ] && . "$SCRATCH/metrics.env" 2>/dev/null || true
+run_sha=$(tr -cd '0-9a-f' < "$SCRATCH/head-sha" 2>/dev/null | cut -c1-7 || true)
+if [ -s "$SCRATCH/incremental-note.md" ]; then run_mode="incr"; else run_mode="full"; fi
+n_cand=$(grep -cE '^@@FINDING[[:space:]]*$' "$SCRATCH/review-candidates.md" 2>/dev/null || true)
+case "$n_cand" in ''|*[!0-9]*) n_cand=0 ;; esac
+run_secs=$(( ${PREP_SECS:-0} + ${PASS1_SECS:-0} + ${PASS2_SECS:-0} ))
+run_cost=$(awk -v a="${PREP_COST:-}" -v b="${PASS1_COST:-}" -v c="${PASS2_COST:-}" -v d="${DOCS_COST:-}" '
+  BEGIN { if (a b c d == "") { print "-"; exit } printf "%.4f", (a+0)+(b+0)+(c+0)+(d+0) }')
+if [ "${#run_sha}" -eq 7 ]; then
+  # Re-running on the same head (restart, engine change) replaces that sha's
+  # row instead of duplicating it.
+  {
+    if [ -s "$SCRATCH/prev-ledger.tsv" ]; then
+      awk -F'\t' -v sha="$run_sha" '$1 != sha' "$SCRATCH/prev-ledger.tsv"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$run_sha" "$run_mode" "$n_important" "$n_nit" "$n_cand" "$run_secs" "$run_cost"
+  } | tail -5 > "$LEDGER"
+else
+  # No usable head sha (old gather output): carry the history unchanged.
+  cp "$SCRATCH/prev-ledger.tsv" "$LEDGER" 2>/dev/null || : > "$LEDGER"
+fi
+
 # 3) Emit the comment. Layout contract: the visible part stays human-minimal
 # (verdict + findings only); everything else — resolved log, docs notes, the
 # machine-readable findings + reviewer summary — lives in collapsed sections,
@@ -526,41 +558,55 @@ nits_hidden=$(( n_nit > NIT_CAP ? n_nit - NIT_CAP : 0 ))
   fi
 
   # Agent details block (last, always collapsed — the one LLM-dedicated
-  # section): reviewer summary + full machine-readable findings (rendered +
-  # capped nits + confidence-suppressed), so agents asked to fix the review
-  # see everything a human didn't. Skipped when there is nothing to show.
-  if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
+  # section): reviewer summary + run history + full machine-readable findings
+  # (rendered + capped nits + confidence-suppressed), so agents asked to fix
+  # the review see everything a human didn't. Skipped when there is nothing
+  # to show.
+  if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
     printf '<details><summary>🤖 For agents (machine-readable)</summary>\n\n'
     if [ -n "$PRDESC_SUMMARY" ]; then
       printf 'Reviewer summary: %s\n\n' "$PRDESC_SUMMARY"
     fi
-    printf '```tsv\n'
-    printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
-    {
-      awk -F'\t' -v OFS='\t' '
+    if [ -s "$LEDGER" ]; then
+      # One line, oldest run first: sha mode important/nit candidates secs cost.
+      printf 'Run history (oldest first): %s\n\n' "$(awk -F'\t' '
         {
-          sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
-          path=loc; line=""
-          idx = match(loc, /:[0-9]+$/)
-          if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
-          anchored = (note == "[unanchored]") ? 0 : 1
-          print sev, conf, path, line, anchored, title, body
+          e = $1 " " $2 " " $3 "i/" $4 "n " $5 "c " $6 "s"
+          if ($7 != "-") e = e " $" $7
+          s = s (NR > 1 ? " · " : "") e
         }
-      ' "$TSV"
-      awk -F'\t' -v OFS='\t' '
-        {
-          sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
-          path=loc; line=""
-          idx = match(loc, /:[0-9]+$/)
-          if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
-          anchored = (note == "[unanchored]") ? 0 : 1
-          print sev, conf, path, line, anchored, title, body
-        }
-      ' "$TSV.suppressed"
-    }
-    printf '```\n'
-    printf 'Schema: sev(important|nit) conf(high|med|low) path line anchored(1|0) title body.\n'
-    printf 'Includes ALL findings (even nits over the display cap and confidence-suppressed ones), so agents see what humans didn'"'"'t.\n'
+        END { print s }
+      ' "$LEDGER")"
+    fi
+    if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
+      printf '```tsv\n'
+      printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
+      {
+        awk -F'\t' -v OFS='\t' '
+          {
+            sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
+            path=loc; line=""
+            idx = match(loc, /:[0-9]+$/)
+            if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+            anchored = (note == "[unanchored]") ? 0 : 1
+            print sev, conf, path, line, anchored, title, body
+          }
+        ' "$TSV"
+        awk -F'\t' -v OFS='\t' '
+          {
+            sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
+            path=loc; line=""
+            idx = match(loc, /:[0-9]+$/)
+            if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+            anchored = (note == "[unanchored]") ? 0 : 1
+            print sev, conf, path, line, anchored, title, body
+          }
+        ' "$TSV.suppressed"
+      }
+      printf '```\n'
+      printf 'Schema: sev(important|nit) conf(high|med|low) path line anchored(1|0) title body.\n'
+      printf 'Includes ALL findings (even nits over the display cap and confidence-suppressed ones), so agents see what humans didn'"'"'t.\n'
+    fi
     printf '</details>\n\n'
   fi
 } > "$OUT"

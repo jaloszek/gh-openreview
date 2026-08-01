@@ -47,6 +47,14 @@ if [ -n "$HEAD_SHA" ]; then
   printf '\n<!-- openreview:state %s -->\n' "$STATE_B64" >> "$REVIEW_FILE"
 fi
 
+# Run ledger (render.sh built it): same hidden-block mechanism as the state.
+# Re-embedded whole every run — this comment is the only durable storage, so
+# dropping the block here would erase the history.
+if [ -s "$SCRATCH/ledger.tsv" ]; then
+  LEDGER_B64=$(base64 < "$SCRATCH/ledger.tsv" | tr -d '\n')
+  printf '<!-- openreview:ledger %s -->\n' "$LEDGER_B64" >> "$REVIEW_FILE"
+fi
+
 # Truncate deterministically — the API 422s past 65,536 chars; budget 60k.
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$BODY_MAX" ]; then
   head -c "$BODY_MAX" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"

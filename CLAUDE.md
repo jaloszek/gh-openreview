@@ -115,8 +115,21 @@ ordering. The visible part of the comment stays human-minimal (verdict +
 findings; a nits-only review opens with a "Looks good — safe to ignore"
 line); a non-`good` PRDESC rating renders as one finding-style bullet (🟠
 poor / 🟡 could-be-improved, never replacement text), and everything
-machine-oriented (full findings TSV + reviewer summary) lives in one
-always-collapsed 🤖 agent section at the end.
+machine-oriented (full findings TSV + reviewer summary + run history) lives in
+one always-collapsed 🤖 agent section at the end.
+
+Run ledger: every posted comment re-embeds a hidden
+`<!-- openreview:ledger <base64> -->` block (beside `openreview:state`) — one
+TSV row per review run, schema `sha7 mode(full|incr) important nit candidates
+secs cost`, capped at the last 5 runs. The comment is the only durable
+storage (post.sh edits/prunes old ones), so render.sh rebuilds the whole
+ledger each run: gather.sh reads the previous block back as
+`prev-ledger.tsv` — strictly field-validated, because comment text is
+untrusted, and never a skip authority (patch-id + fp remain the only skip
+gate) — then render.sh appends the current run's row and renders the one-line
+`Run history` in the 🤖 section. It exists to make cost/depth trends (a
+zero-findings streak, a rising verify kill rate) visible as input for future
+depth/persona planning.
 
 ### Conventions that matter
 

@@ -109,14 +109,16 @@ Two LLM passes plus a deterministic render:
    surfaces the 2-3 most valuable concrete improvements (simplification,
    edge-case hardening, test gaps for changed logic) even when nothing is
    blocking, while a truly trivial diff may still yield an empty review.
-2. **Verify** — ground each candidate against the diff and drop the inferential
-   ones (skipped when the first pass found nothing). Importants must prove a
-   trigger scenario; improvement nits are kept on usefulness.
+2. **Verify** — adversarially re-check each candidate: the pass actively tries
+   to refute an `important` claim against the real code (the guard that blocks
+   the scenario, the caller that never sends the bad input) and keeps only what
+   survives (skipped when the first pass found nothing). Importants must prove
+   a trigger scenario; improvement nits are kept on usefulness.
 3. **Render** — a deterministic step builds the final comment (🔴 important /
    🟡 nit; pre-existing issues are never shown). The visible part stays
    human-minimal — verdict plus findings — while everything machine-oriented
-   (the full findings TSV and the reviewer's one-line risk summary) lives in
-   one always-collapsed agent section. It guarantees the marker header, posts
+   (the full findings TSV, the reviewer's one-line risk summary, and the run
+   history) lives in one always-collapsed agent section. It guarantees the marker header, posts
    one summary comment, and prunes stale ones so only the latest remains.
 
 Before the passes run, a token-scoped step gathers the PR context into a scratch
@@ -151,6 +153,15 @@ line. On the next run:
   this only helps the model prioritize.
 - A force-push or rebase that makes the previous commit unreachable falls back
   silently to a full review.
+
+**Run ledger:** alongside the state block, the comment carries a hidden run
+ledger — one compact row per review run (commit, full/incremental mode,
+finding and candidate counts, engine seconds, cost), capped at the last 5
+runs. Each run edits or prunes the previous comment, so the whole ledger is
+re-embedded into every new body; it renders as a one-line `Run history`
+inside the collapsed agent section. It is telemetry for spotting trends (a
+zero-findings streak, a rising verify kill rate) — it never decides a skip,
+and a restart drops it with the rest of the previous state.
 
 **Carry-forward + resolved tracking:** incremental mode only narrows the
 *model's attention* — it must never narrow the *posted comment*. When the
