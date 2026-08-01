@@ -27,21 +27,34 @@ if ! head -1 "$REVIEW_FILE" | grep -qF "$MARKER_MATCH"; then
   mv "$REVIEW_FILE.posted" "$REVIEW_FILE"
 fi
 
-# Truncate the model-derived body BEFORE appending the footer/state/ledger
-# trailers, reserving room for them — the API 422s past 65,536 chars; budget
-# 60k total. Truncating after the appends would cut the machine-readable
-# blocks (and with them the skip guard, incremental state, and run history)
-# on exactly the large-PR runs where that carried state matters most. The
-# trailers are small and bounded (footer line + two base64 one-liners), so a
-# fixed reserve suffices. The findings table lives in the body itself; if
-# truncation ever cuts it, carry-forward degrades for one run — never the
-# skip guard.
-TRAILER_RESERVE=2000
+# Truncate the model-derived body BEFORE appending the agent section and the
+# footer/state/ledger trailers, reserving room for them — the API 422s past
+# 65,536 chars; budget 60k total. The agent section (summary + runs + the
+# carry-forward findings table) is appended AFTER truncation with a reserve
+# measured from its actual size, so it survives exactly the large-PR runs
+# where the body gets cut; 2k covers the footer/state/ledger lines. A
+# pathological section must never cost the comment itself: past 40k chars it
+# is dropped (carry-forward skips one run) so the reserve can never exceed
+# the budget and invert the truncation threshold.
+AGENT_SECTION="$SCRATCH/agent-section.md"
+AGENT_SIZE=0
+[ -s "$AGENT_SECTION" ] && AGENT_SIZE=$(wc -c < "$AGENT_SECTION" | tr -d ' ')
+if [ "$AGENT_SIZE" -gt 40000 ]; then
+  warn "agent section too large (${AGENT_SIZE} chars) — dropping it this run"
+  AGENT_SIZE=0
+fi
+TRAILER_RESERVE=$(( 2000 + AGENT_SIZE ))
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
   printf '\n\n_[comment truncated]_\n' >> "$REVIEW_FILE.trunc"
   mv "$REVIEW_FILE.trunc" "$REVIEW_FILE"
   warn "review body exceeded $((BODY_MAX - TRAILER_RESERVE)) chars; truncated"
+fi
+
+# Agent data section (render.sh built it): appended after the truncation
+# above so the carry-forward findings table is never the part that gets cut.
+if [ "$AGENT_SIZE" -gt 0 ]; then
+  cat "$AGENT_SECTION" >> "$REVIEW_FILE"
 fi
 
 # Head SHA the review was run against, for the "updated for commit" footer.

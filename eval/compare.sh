@@ -412,10 +412,19 @@ selftest() {
       "$EVAL_DIR/selftest/compare-opencode-comment.md" \
       | awk -F'\t' 'NR > 1 && NF >= 7 {
           loc = ($4 == "" ? $3 : $3 ":" $4)
+          gsub(/\|/, "\xc2\xa6", loc); gsub(/\|/, "\xc2\xa6", $6); gsub(/\|/, "\xc2\xa6", $7)
           printf "| %s | %s | `%s` | %s | %s | %s |\n", $1, $2, loc, ($5 == 1 ? "y" : "n"), $6, $7
         }'
+    # Pipe-escape probe (matches nothing in the answer key): asserts below
+    # that the ¦ escape reads back as a literal | — the round-trip contract.
+    printf '| nit | low | `metrix/notify.py:120` | y | pipe probe a ¦ b | body with regex alt (x¦y) |\n'
     printf '\n</details>\n'
   } > "$agentfixture"
+  extract_tsv_block "$agentfixture" "$tdir/agent-extract.tsv"
+  if ! grep -qF 'pipe probe a | b' "$tdir/agent-extract.tsv"; then
+    warn "selftest: agent-table fixture — pipe escape did not round-trip back to a literal |"
+    fails=$((fails + 1))
+  fi
   outtsv="$tdir/compare-opencode-agent.tsv"
   : > "$outtsv"
   score_reviewer opencode-agent "$agentfixture" "$mainkey" "$extraskey" "$outtsv" > "$tdir/report-opencode-agent.txt"

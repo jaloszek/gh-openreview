@@ -603,14 +603,23 @@ fi
     printf '\n</details>\n\n'
   fi
 
-  # Agent data (last, always collapsed): reviewer summary + run history + a
-  # findings table covering EVERYTHING (rendered + over-cap nits +
-  # confidence-suppressed), so agents asked to act on the review see what
-  # humans didn't — and humans can still audit it, unlike a base64 blob.
-  # The markdown table doubles as the machine format: gather.sh and
-  # eval/compare.sh parse the rows back (agent_table_to_tsv in common.sh);
-  # `|` in text cells is swapped for `¦` so cell boundaries stay unambiguous.
-  # Capped at 30 rows with an explicit omitted-rows note.
+} > "$OUT"
+
+# Agent data section (always collapsed): reviewer summary + run history + a
+# findings table covering EVERYTHING (rendered + over-cap nits +
+# confidence-suppressed), so agents asked to act on the review see what
+# humans didn't — and humans can still audit it, unlike a base64 blob.
+# The markdown table doubles as the machine format: gather.sh and
+# eval/compare.sh parse the rows back (agent_table_to_tsv in common.sh);
+# `|` in text cells is swapped for `¦` so cell boundaries stay unambiguous.
+# Capped at 30 rows with an explicit omitted-rows note.
+#
+# Written to its own file, NOT into the body: post.sh appends it AFTER body
+# truncation with its own measured reserve, so the carry-forward table
+# survives exactly the large-PR runs where the body gets cut.
+AGENT_SECTION="$SCRATCH/agent-section.md"
+: > "$AGENT_SECTION"
+{
   if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
     n_payload_rows=$(cat "$TSV" "$TSV.suppressed" 2>/dev/null | wc -l | tr -d ' ')
     n_runs=$(wc -l < "$LEDGER" | tr -d ' ')
@@ -647,8 +656,7 @@ fi
     fi
     printf '\n</details>\n\n'
   fi
-
-} > "$OUT"
+} > "$AGENT_SECTION"
 rm -f "$TSV.suppressed"
 
 # findings.tsv (comment-style "both" input for post.sh's inline review):
