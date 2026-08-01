@@ -27,6 +27,19 @@ if ! head -1 "$REVIEW_FILE" | grep -qF "$MARKER_MATCH"; then
   mv "$REVIEW_FILE.posted" "$REVIEW_FILE"
 fi
 
+# Truncate the model-derived body BEFORE appending the footer/state/ledger
+# trailers, reserving room for them — the API 422s past 65,536 chars; budget
+# 60k total. Truncating after the appends would cut the machine-readable
+# blocks (and with them the skip guard, incremental state, and run history)
+# on exactly the large-PR runs where that carried state matters most.
+TRAILER_RESERVE=2000
+if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
+  head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
+  printf '\n\n_[comment truncated]_\n' >> "$REVIEW_FILE.trunc"
+  mv "$REVIEW_FILE.trunc" "$REVIEW_FILE"
+  warn "review body exceeded $((BODY_MAX - TRAILER_RESERVE)) chars; truncated"
+fi
+
 # Head SHA the review was run against, for the "updated for commit" footer.
 HEAD_SHA=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo '')
 TS=$(date -u +'%Y-%m-%d %H:%M UTC')
@@ -47,12 +60,12 @@ if [ -n "$HEAD_SHA" ]; then
   printf '\n<!-- openreview:state %s -->\n' "$STATE_B64" >> "$REVIEW_FILE"
 fi
 
-# Truncate deterministically — the API 422s past 65,536 chars; budget 60k.
-if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$BODY_MAX" ]; then
-  head -c "$BODY_MAX" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
-  printf '\n\n_[comment truncated]_\n' >> "$REVIEW_FILE.trunc"
-  mv "$REVIEW_FILE.trunc" "$REVIEW_FILE"
-  warn "review body exceeded ${BODY_MAX} chars; truncated"
+# Run ledger (render.sh built it): same hidden-block mechanism as the state.
+# Re-embedded whole every run — this comment is the only durable storage, so
+# dropping the block here would erase the history.
+if [ -s "$SCRATCH/ledger.tsv" ]; then
+  LEDGER_B64=$(base64 < "$SCRATCH/ledger.tsv" | tr -d '\n')
+  printf '<!-- openreview:ledger %s -->\n' "$LEDGER_B64" >> "$REVIEW_FILE"
 fi
 
 # Find every existing marker comment by AUTHOR_LOGIN, oldest first.

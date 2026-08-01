@@ -55,6 +55,8 @@ gh pr view "$OR_PR" --repo "$OR_REPO" --json title,body,files,baseRefOid,headRef
 # its hidden state block can gate the rest of this run.
 BASE_SHA=$(gh pr view "$OR_PR" --repo "$OR_REPO" --json baseRefOid --jq .baseRefOid 2>/dev/null || echo '')
 HEAD_SHA=$(git -C "$OR_DIR" rev-parse HEAD 2>/dev/null || echo '')
+# Persisted for render.sh (token-less) to stamp the run-ledger row.
+printf '%s' "$HEAD_SHA" > "$SCRATCH/head-sha"
 
 PREV_COMMENT_RAW="$SCRATCH/.prev-comment-raw.md"
 gh api "repos/$OR_REPO/issues/$OR_PR/comments" --paginate \
@@ -102,6 +104,29 @@ elif [ -s "$PREV_COMMENT_RAW" ]; then
       PREV_PATCH_ID=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"patch_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
       PREV_FP=$(printf '%s' "$STATE_JSON" | sed -n 's/.*"fp"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
     fi
+  fi
+fi
+
+# Run ledger: `<!-- openreview:ledger <base64> -->` carries one TSV row per
+# prior review run (sha7 mode important nit candidates secs cost). Comment
+# text is untrusted — every field must pass a strict allowlist or the row is
+# dropped. The ledger is telemetry only: it may inform future depth/persona
+# narrowing but never authorizes a skip (patch-id + fp above stay the only
+# skip authority). Restart drops it like all other prior state.
+rm -f "$SCRATCH/prev-ledger.tsv"
+if [ "$RESTART" -ne 1 ] && [ -s "$PREV_COMMENT_RAW" ]; then
+  LEDGER_B64=$(tr -d '\r' < "$PREV_COMMENT_RAW" \
+    | grep -oE 'openreview:ledger [A-Za-z0-9+/=]+' | tail -1 \
+    | sed -E 's/^openreview:ledger //' || true)
+  if [ -n "$LEDGER_B64" ]; then
+    printf '%s' "$LEDGER_B64" | base64 -d 2>/dev/null \
+      | awk -F'\t' 'NF == 7 \
+          && $1 ~ /^[0-9a-f]+$/ && length($1) >= 7 && length($1) <= 40 \
+          && ($2 == "full" || $2 == "incr") \
+          && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ \
+          && $6 ~ /^[0-9]+$/ && $7 ~ /^(-|[0-9.]+)$/' \
+      | tail -5 > "$SCRATCH/prev-ledger.tsv" || true
+    [ -s "$SCRATCH/prev-ledger.tsv" ] || rm -f "$SCRATCH/prev-ledger.tsv"
   fi
 fi
 
@@ -394,7 +419,7 @@ awk '
 if [ "$RESTART" -eq 1 ]; then
   echo "(no previous review)" > "$SCRATCH/prev-review.md"
 else
-  sed '/<!-- openreview:state /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
+  sed '/<!-- openreview:state /d; /<!-- openreview:ledger /d' "$PREV_COMMENT_RAW" > "$SCRATCH/prev-review.md" 2>/dev/null \
     || : > "$SCRATCH/prev-review.md"
   [ -s "$SCRATCH/prev-review.md" ] || echo "(no previous review)" > "$SCRATCH/prev-review.md"
 fi
