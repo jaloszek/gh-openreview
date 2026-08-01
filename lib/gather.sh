@@ -384,6 +384,87 @@ if [ "$INCREMENTAL_MODE" -eq 1 ]; then
   ' "$SCRATCH/prev-findings.tsv" > "$SCRATCH/prev-findings-touched.tsv"
   ntouched=$(wc -l < "$SCRATCH/prev-findings-touched.tsv" | tr -d ' ')
   info "incremental mode: $ntouched of $(wc -l < "$SCRATCH/prev-findings.tsv" | tr -d ' ') previous finding(s) touched by the incremental diff"
+
+  # Blast-radius escalation (TASK-55): line proximity under-classifies — a
+  # previous finding whose OWN lines the delta didn't touch can still be
+  # invalidated when the delta changes a symbol the finding's file consumes
+  # (a guard moved, a constant's semantics changed, a contract tightened).
+  # Extract changed symbol names from the INCREMENTAL diff (same shapes as
+  # the TASK-41 feed: CONSTANTS, def/class names, shell functions) and
+  # re-classify any untouched previous finding whose file mentions one of
+  # them as touched — the model re-verifies it against current code instead
+  # of render.sh carrying it forward verbatim. Over-escalation is safe (one
+  # extra re-check); a stale carried finding is not. Deterministic, no LLM.
+  #
+  # Escalated rows are ALSO recorded in prev-findings-escalated.tsv: their
+  # own lines did not change, so render.sh must never present a dropped
+  # re-verification as "resolved" — it moves such rows back to the carried
+  # set instead (see the escalated split in render.sh).
+  rm -f "$SCRATCH/prev-findings-escalated.tsv"
+  INCR_SYMS="$SCRATCH/.blast-syms.txt"
+  awk '
+    /^(\+\+\+|---) / { next }
+    /^[+-][[:space:]]*[A-Z_][A-Z0-9_]* *=/ {
+      line = $0; sub(/^[+-][[:space:]]*/, "", line)
+      sym = line; sub(/[[:space:]]*=.*/, "", sym)
+      if (sym ~ /^[A-Z_][A-Z0-9_]*$/) print sym
+      next
+    }
+    /^[+-][[:space:]]*(def|class) [A-Za-z_]/ {
+      line = $0; sub(/^[+-][[:space:]]*(def|class)[[:space:]]+/, "", line)
+      sym = line; sub(/[^A-Za-z0-9_].*/, "", sym)
+      if (sym != "") print sym
+      next
+    }
+    /^[+-][a-z_]+\(\)/ {
+      line = $0; sub(/^[+-]/, "", line)
+      sym = line; sub(/\(\).*/, "", sym)
+      if (sym != "") print sym
+      next
+    }
+  ' "$SCRATCH/pr-incremental.diff" | awk 'length($0) >= 3' \
+    | sort | uniq -c | sort -k1,1rn -k2,2 | awk '{ print $2 }' | head -12 > "$INCR_SYMS"
+  if [ -s "$INCR_SYMS" ]; then
+    # Untouched = prev minus touched, keyed path+line+title exactly like
+    # render.sh's own split, so both sides classify identically.
+    BLAST_UNTOUCHED="$SCRATCH/.blast-untouched.tsv"
+    awk -F'\t' -v tf="$SCRATCH/prev-findings-touched.tsv" '
+      BEGIN {
+        while ((getline line < tf) > 0) {
+          n = split(line, a, "\t")
+          if (n >= 6) touched[a[3] "\t" a[4] "\t" a[6]] = 1
+        }
+        close(tf)
+      }
+      !(($3 "\t" $4 "\t" $6) in touched)
+    ' "$SCRATCH/prev-findings.tsv" > "$BLAST_UNTOUCHED"
+    if [ -s "$BLAST_UNTOUCHED" ]; then
+      # Symbols are identifiers ([A-Za-z0-9_] only) — safe as an ERE branch.
+      SYM_RE=$(paste -sd'|' "$INCR_SYMS")
+      BLAST_PATHS="$SCRATCH/.blast-paths.txt"
+      cut -f3 "$BLAST_UNTOUCHED" | sort -u | while IFS= read -r p; do
+        [ -f "$OR_DIR/$p" ] || continue
+        grep -qwE "$SYM_RE" "$OR_DIR/$p" 2>/dev/null || continue
+        printf '%s\n' "$p"
+      done > "$BLAST_PATHS"
+      if [ -s "$BLAST_PATHS" ]; then
+        BLAST_ROWS="$SCRATCH/.blast-escalated.tsv"
+        awk -F'\t' -v pf="$BLAST_PATHS" '
+          BEGIN { while ((getline l < pf) > 0) hit[l] = 1; close(pf) }
+          ($3 in hit)
+        ' "$BLAST_UNTOUCHED" > "$BLAST_ROWS"
+        if [ -s "$BLAST_ROWS" ]; then
+          cat "$BLAST_ROWS" >> "$SCRATCH/prev-findings-touched.tsv"
+          cp "$BLAST_ROWS" "$SCRATCH/prev-findings-escalated.tsv"
+          info "blast-radius: escalated $(wc -l < "$BLAST_ROWS" | tr -d ' ') carried finding(s) to re-verify (delta changed: $(paste -sd, "$INCR_SYMS"))"
+        fi
+        rm -f "$BLAST_ROWS"
+      fi
+      rm -f "$BLAST_PATHS"
+    fi
+    rm -f "$BLAST_UNTOUCHED"
+  fi
+  rm -f "$INCR_SYMS"
 else
   if [ "$INCR_LINES" -gt 0 ]; then
     if [ ! -s "$SCRATCH/prev-findings.tsv" ]; then
@@ -393,7 +474,8 @@ else
     fi
   fi
   rm -f "$SCRATCH/pr-incremental.diff" "$SCRATCH/incremental-note.md" "$SCRATCH/incr-lines.tsv" \
-        "$SCRATCH/prev-findings.tsv" "$SCRATCH/prev-findings-touched.tsv"
+        "$SCRATCH/prev-findings.tsv" "$SCRATCH/prev-findings-touched.tsv" \
+        "$SCRATCH/prev-findings-escalated.tsv"
 fi
 
 # pr-numbered.diff: same diff --git / @@ structure as pr.diff, but every

@@ -169,7 +169,15 @@ incremental diff is under `OPENREVIEW_INCR_MAX_PCT` (default 60%) of the full
 diff AND a previous run's findings are available, the previous review's
 findings that sit outside the incremental diff (± 10 lines) are carried
 forward into the new comment verbatim, unverified again (they were already
-verified in an earlier run). Findings whose code DID change get handed back
+verified in an earlier run). Line proximity alone under-classifies, so a
+blast-radius check backs it up: when the incremental diff changes a symbol
+(constant, def/class, shell function) that a carried finding's file consumes,
+that finding is escalated to re-verification too — a small delta to a core
+definition can invalidate conclusions far outside its own hunks. An escalated
+finding the re-check does not re-confirm stays carried rather than being
+reported as resolved: its own lines never changed, so silence is not proof of
+a fix. Findings
+whose code DID change (either way) get handed back
 to the model to re-check: still present → re-emitted as a normal finding;
 fixed → dropped and shown in a collapsed "✅ Resolved since last review"
 section instead. A fresh finding near a carried one's location always wins

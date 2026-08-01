@@ -202,6 +202,36 @@ if [ -s "$PREV_TSV" ]; then
     }
   ' "$NORM_TOUCHED" > "$RESOLVED"
 
+  # Blast-radius escalated rows (TASK-55) sit in the touched feed for
+  # RE-VERIFICATION only — their own lines did not change, so a re-check the
+  # model dropped must not be presented as "resolved". Move any escalated row
+  # that landed in RESOLVED back to CARRIED: a dropped re-verification
+  # degrades to the plain carry-forward instead of fabricating a fix.
+  ESC_TSV="$SCRATCH/prev-findings-escalated.tsv"
+  if [ -s "$ESC_TSV" ] && [ -s "$RESOLVED" ]; then
+    NORM_ESC="$SCRATCH/.prev-findings-escalated.norm.tsv"
+    tr -d '\r' < "$ESC_TSV" | awk -F'\t' 'NF>=7 && tolower($1)!="sev"' > "$NORM_ESC"
+    rm -f "$RESOLVED.esc"
+    awk -F'\t' -v OFS='\t' -v ef="$NORM_ESC" -v cf="$RESOLVED.esc" '
+      BEGIN {
+        while ((getline line < ef) > 0) {
+          n = split(line, a, "\t")
+          if (n >= 6) esc[a[3] "\t" a[4] "\t" a[6]] = 1
+        }
+        close(ef)
+      }
+      {
+        if (($3 "\t" $4 "\t" $6) in esc) print > cf
+        else print
+      }
+    ' "$RESOLVED" > "$RESOLVED.split"
+    mv "$RESOLVED.split" "$RESOLVED"
+    if [ -s "$RESOLVED.esc" ]; then
+      cat "$RESOLVED.esc" >> "$CARRIED"
+    fi
+    rm -f "$RESOLVED.esc" "$NORM_ESC"
+  fi
+
   # Carried/resolved items are model-authored text from an earlier run that
   # was already egress-sanitized once when first rendered — re-sanitize
   # anyway (must be idempotent; verified separately) rather than trust it.
