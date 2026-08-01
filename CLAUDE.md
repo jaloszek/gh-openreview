@@ -116,7 +116,10 @@ findings; a nits-only review opens with a "Looks good — safe to ignore"
 line); a non-`good` PRDESC rating renders as one finding-style bullet (🟠
 poor / 🟡 could-be-improved, never replacement text), and everything
 machine-oriented (full findings TSV + reviewer summary + run history) lives in
-one always-collapsed 🤖 agent section at the end.
+a hidden `<!-- openreview:agent <base64> -->` block — invisible to readers,
+decodable by agents working the raw comment body, and read back by gather.sh
+for carry-forward (with a fallback to the older visible ```tsv fence for
+comments posted before the block existed).
 
 Run ledger: every posted comment re-embeds a hidden
 `<!-- openreview:ledger <base64> -->` block (beside `openreview:state`) — one
@@ -126,8 +129,9 @@ storage (post.sh edits/prunes old ones), so render.sh rebuilds the whole
 ledger each run: gather.sh reads the previous block back as
 `prev-ledger.tsv` — strictly field-validated, because comment text is
 untrusted, and never a skip authority (patch-id + fp remain the only skip
-gate) — then render.sh appends the current run's row and renders the one-line
-`Run history` in the 🤖 section. It exists to make cost/depth trends (a
+gate) — then render.sh appends the current run's row and includes the
+one-line `Run history` in the hidden agent payload. It exists to make
+cost/depth trends (a
 zero-findings streak, a rising verify kill rate) visible as input for future
 depth/persona planning.
 

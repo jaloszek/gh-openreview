@@ -439,6 +439,9 @@ if [ -s "$SCRATCH/docs-notes.md" ]; then
     function flush() {
       if (have && title != "" && body != "") {
         gsub(/\t/, " ", loc); gsub(/\t/, " ", title); gsub(/\t/, " ", body)
+        # Hard display cap: the prompt asks for one-two sentences, but models
+        # sometimes paste a full replacement paragraph — cut, never render it.
+        if (length(body) > 300) body = substr(body, 1, 297) "…"
         printf "%s\t%s\t%s\n", loc, title, body
       }
       have=0; loc=""; title=""; body=""
@@ -587,19 +590,27 @@ fi
     printf '\n</details>\n\n'
   fi
 
-  # Agent details block (last, always collapsed — the one LLM-dedicated
-  # section): reviewer summary + run history + full machine-readable findings
-  # (rendered + capped nits + confidence-suppressed), so agents asked to fix
-  # the review see everything a human didn't. Skipped when there is nothing
-  # to show.
-  if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
-    printf '<details><summary>🤖 For agents (machine-readable)</summary>\n\n'
+} > "$OUT"
+
+# Agent payload — the machine-readable companion the visible comment no longer
+# carries (the old collapsed 🤖 section still added ~10 rendered lines per
+# review; humans never wanted them). post.sh embeds this file as a hidden
+# `<!-- openreview:agent <base64> -->` block, invisible to readers but plainly
+# decodable by any agent working the raw comment body, and gather.sh reads the
+# findings back from it next run for carry-forward. Contents: reviewer
+# summary + run history one-liners, then the full findings TSV (rendered +
+# capped nits + confidence-suppressed — everything a human didn't see),
+# capped at 30 rows.
+AGENT_PAYLOAD="$SCRATCH/agent-payload.md"
+: > "$AGENT_PAYLOAD"
+if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ] || [ -s "$LEDGER" ]; then
+  {
     if [ -n "$PRDESC_SUMMARY" ]; then
-      printf 'Reviewer summary: %s\n\n' "$PRDESC_SUMMARY"
+      printf 'Reviewer summary: %s\n' "$PRDESC_SUMMARY"
     fi
     if [ -s "$LEDGER" ]; then
       # One line, oldest run first: sha mode important/nit candidates secs cost.
-      printf 'Run history (oldest first): %s\n\n' "$(awk -F'\t' '
+      printf 'Run history (oldest first): %s\n' "$(awk -F'\t' '
         {
           e = $1 " " $2 " " $3 "i/" $4 "n " $5 "c " $6 "s"
           if ($7 != "-") e = e " $" $7
@@ -609,37 +620,20 @@ fi
       ' "$LEDGER")"
     fi
     if [ -s "$TSV" ] || [ -s "$TSV.suppressed" ]; then
-      printf '```tsv\n'
-      printf 'sev\tconf\tpath\tline\tanchored\ttitle\tbody\n'
-      {
-        awk -F'\t' -v OFS='\t' '
-          {
-            sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
-            path=loc; line=""
-            idx = match(loc, /:[0-9]+$/)
-            if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
-            anchored = (note == "[unanchored]") ? 0 : 1
-            print sev, conf, path, line, anchored, title, body
-          }
-        ' "$TSV"
-        awk -F'\t' -v OFS='\t' '
-          {
-            sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
-            path=loc; line=""
-            idx = match(loc, /:[0-9]+$/)
-            if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
-            anchored = (note == "[unanchored]") ? 0 : 1
-            print sev, conf, path, line, anchored, title, body
-          }
-        ' "$TSV.suppressed"
-      }
-      printf '```\n'
-      printf 'Schema: sev(important|nit) conf(high|med|low) path line anchored(1|0) title body.\n'
-      printf 'Includes ALL findings (even nits over the display cap and confidence-suppressed ones), so agents see what humans didn'"'"'t.\n'
+      printf 'Findings TSV (all, incl. over-cap and confidence-suppressed): sev(important|nit) conf(high|med|low) path line anchored(1|0) title body\n'
+      cat "$TSV" "$TSV.suppressed" 2>/dev/null | head -30 | awk -F'\t' -v OFS='\t' '
+        {
+          sev=$2; conf=$4; loc=$3; title=$5; body=$6; note=$9
+          path=loc; line=""
+          idx = match(loc, /:[0-9]+$/)
+          if (idx > 0) { path = substr(loc, 1, idx-1); line = substr(loc, idx+1) + 0 }
+          anchored = (note == "[unanchored]") ? 0 : 1
+          print sev, conf, path, line, anchored, title, body
+        }
+      '
     fi
-    printf '</details>\n\n'
-  fi
-} > "$OUT"
+  } > "$AGENT_PAYLOAD"
+fi
 rm -f "$TSV.suppressed"
 
 # findings.tsv (comment-style "both" input for post.sh's inline review):

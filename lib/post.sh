@@ -27,12 +27,14 @@ if ! head -1 "$REVIEW_FILE" | grep -qF "$MARKER_MATCH"; then
   mv "$REVIEW_FILE.posted" "$REVIEW_FILE"
 fi
 
-# Truncate the model-derived body BEFORE appending the footer/state/ledger
-# trailers, reserving room for them — the API 422s past 65,536 chars; budget
-# 60k total. Truncating after the appends would cut the machine-readable
-# blocks (and with them the skip guard, incremental state, and run history)
-# on exactly the large-PR runs where that carried state matters most.
-TRAILER_RESERVE=2000
+# Truncate the model-derived body BEFORE appending the footer/state/ledger/
+# agent trailers, reserving room for them — the API 422s past 65,536 chars;
+# budget 60k total. Truncating after the appends would cut the machine-
+# readable blocks (and with them the skip guard, incremental state, run
+# history, and carry-forward findings) on exactly the large-PR runs where
+# that carried state matters most. The agent payload dominates the reserve
+# (30 findings × ~200 chars, ~1.4x as base64).
+TRAILER_RESERVE=12000
 if [ "$(wc -c < "$REVIEW_FILE" | tr -d ' ')" -gt "$((BODY_MAX - TRAILER_RESERVE))" ]; then
   head -c "$((BODY_MAX - TRAILER_RESERVE))" "$REVIEW_FILE" > "$REVIEW_FILE.trunc"
   printf '\n\n_[comment truncated]_\n' >> "$REVIEW_FILE.trunc"
@@ -66,6 +68,15 @@ fi
 if [ -s "$SCRATCH/ledger.tsv" ]; then
   LEDGER_B64=$(base64 < "$SCRATCH/ledger.tsv" | tr -d '\n')
   printf '<!-- openreview:ledger %s -->\n' "$LEDGER_B64" >> "$REVIEW_FILE"
+fi
+
+# Agent payload (render.sh built it): reviewer summary + run history + the
+# full findings TSV. Hidden from readers, decodable by agents working the raw
+# body, and read back by gather.sh next run for carry-forward — this block
+# replaced the old visible collapsed 🤖 section.
+if [ -s "$SCRATCH/agent-payload.md" ]; then
+  AGENT_B64=$(base64 < "$SCRATCH/agent-payload.md" | tr -d '\n')
+  printf '<!-- openreview:agent %s -->\n' "$AGENT_B64" >> "$REVIEW_FILE"
 fi
 
 # Find every existing marker comment by AUTHOR_LOGIN, oldest first.
