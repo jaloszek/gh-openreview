@@ -231,10 +231,22 @@ prepare_opencode_config() {
 # omitted or SCRATCH is unset) so it never pollutes command stdout. opencode's
 # human-readable chatter still goes to stderr; the model communicates results
 # by writing files (the prompts say so).
-# Env: OPENREVIEW_PASS_TIMEOUT (seconds, default 600), OPENREVIEW_AUTH_CMD.
+# Env: OPENREVIEW_PASS_TIMEOUT (seconds, default 900), OPENREVIEW_AUTH_CMD.
+#
+# On the 900s default: a pass's wall time scales with prompt length, and the
+# generate prompt is the longest one we send. Budget for the slowest tier a
+# consumer might pick rather than the median — the cost of a too-low cap is a
+# hard engine failure and no review, while an over-generous cap only matters
+# when a call is already stuck (and then the retry, not the cap, is what
+# saves the run). Observed 2026-08-01, deepseek-v4-flash on OpenCode Go:
+# generate 53-174s and verify 57-75s on small diffs, but the same tier hit
+# 300s twice on a 228-line diff — a 300s cap failed 6/6 attempts on a PR that
+# passes comfortably at 600s. 900s keeps roughly a 5x margin over the
+# observed median; the two-attempt retry means one stuck call costs at most
+# 2x this before the pass gives up.
 oc_run() {
   local dir="$1" model="$2" prompt="$3" pass="${4:-}"
-  local to="${OPENREVIEW_PASS_TIMEOUT:-600}"
+  local to="${OPENREVIEW_PASS_TIMEOUT:-900}"
   local jsonl="/dev/null"
   if [ -n "$pass" ] && [ -n "${SCRATCH:-}" ]; then
     jsonl="$SCRATCH/oc-$pass.jsonl"

@@ -336,9 +336,13 @@ classes: omission bugs, run-to-run flakiness on moderates.
 Pending: TASK-26 (omission-hint experiment — gate not yet run), TASK-28
 (cheap triage — implemented, lint-clean, parked ungated on
 `wip/task-28-triage` until its eval gate runs). Operational lesson: heavy
-eval usage can throttle the free tier (hangs, 0-byte event streams) — use
-`OPENREVIEW_PASS_TIMEOUT=180` for eval runs and prefer a paid cheap tier
-for gate work.
+eval usage can throttle the free tier (hangs, 0-byte event streams) — cap
+`OPENREVIEW_PASS_TIMEOUT` below the engine default for eval runs so a
+throttled call fails fast instead of stalling the sweep, and prefer a paid
+cheap tier for gate work. The 180s that worked in July is too tight since
+the 2026-08-01 deepseek-v4-flash swap (generate alone can exceed 300s on a
+200-line diff); 600s is the current floor for a run whose numbers you intend
+to trust.
 
 ## Benchmark v2: hard content, clean runs (live-hard PR #22, 2026-07-04/05)
 

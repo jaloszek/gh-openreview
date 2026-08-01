@@ -30,6 +30,10 @@ jobs:
       github.event_name == 'issue_comment' ||
       github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
+    # Backstop only — without it a stuck pass inherits GitHub's 6h default.
+    # Self-test runs land in 120-380s; 30min still leaves room for one full
+    # OPENREVIEW_PASS_TIMEOUT expiry plus its retry.
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
