@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- Default `opencode-version` is now `2.0.32`, installed via
+  `https://opencode.ai/v2/install`. The opencode server rejects 1.x clients, and
+  `opencode.ai/install` only installs 1.x. Per-pass cost/token telemetry is
+  unavailable on 2.x (no `step_finish` event in `--format json`); the review
+  itself is unaffected.
+
 ### Changed (breaking)
 
 - **Refocused the project to a single GitHub Action.** Removed the local `gh`
